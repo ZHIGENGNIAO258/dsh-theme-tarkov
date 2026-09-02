@@ -19,13 +19,23 @@
 - **背景音乐**：右下角浮窗播放器，曲库由你自己提供（目录放置或面板上传）；多个标签页同时打开时，只有 leader 标签页在播放。
 - **设置面板**：设置 → 插件 → 插件配置 →「塔科夫主题」，开启/关闭各功能、调整音量与横幅透明度、管理音乐曲库（添加 / 删除 / 禁用）。
 
-## 音频文件放在哪里
+## 安装
+
+```bash
+dsh plugin --profile web add dsh-theme-tarkov
+```
+
+`dsh plugin add` 会把本包加入 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`，bundle 层**自动应用**包内 `cordis.patch.yml`（即插件行 `id: tarkov`）。重启 dsh web 即生效。
+
+## 配置：音频文件放在哪里
 
 | 位置 | 内容 |
 | --- | --- |
 | `~/.dsh/dsh-tarkov/music/` | 背景音乐：**直接把音频文件丢进去即可**（mp3 / wav / ogg / m4a / aac / flac），或在设置面板点「添加音乐」上传（上限 200MB） |
 | `~/.dsh/dsh-tarkov/sounds/` | 提示音：首次启动时会把插件自带的默认音效（done.m4a / approval.m4a / error.m4a）复制到这里，直接替换同名文件即可换音效 |
 | `~/.dsh/dsh-tarkov/prefs.json` | 全部设置（音量、透明度、开关、禁用曲目等） |
+
+安装后打开设置 → 插件 → 插件配置 →「塔科夫主题」，即可开启/关闭各功能、调整音量和横幅透明度、管理曲库。
 
 ## 技术实现（维护参考）
 
@@ -48,14 +58,6 @@
 - `tests/notify.test.mjs`：事件分类、去重状态机、prefs 校验；
 - `tests/host-routes.test.mjs`：host 路由集成测试（隔离 DSH_HOME，不碰真实数据）——曲库合并、添加/删除、流式播放；
 - `tests/client-smoke.mjs`：client 初始化与 apply() 冒烟。
-
-## 安装
-
-```bash
-dsh plugin --profile web add dsh-theme-tarkov
-```
-
-`dsh plugin add` 会把本包加入 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`，bundle 层**自动应用**包内 `cordis.patch.yml`（即插件行 `id: tarkov`）。重启 dsh web 即生效。
 
 ## 开发
 

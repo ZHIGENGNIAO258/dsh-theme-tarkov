@@ -15,6 +15,19 @@ process.env.DSH_HOME = tmp
 const mod = await import('../lib/index.js')
 const MUSIC_DIR = path.join(tmp, 'dsh-tarkov', 'music')
 
+// The package ships no music files by default (audio must be user-supplied).
+// These tests still cover the "bundled track" code path, so a tiny dummy
+// builtin track is created in assets/music for the run and removed after.
+const BUILTIN_FILE = '__test_builtin.mp3'
+const BUILTIN_NAME = '__test_builtin'
+const BUILTIN_BYTES = Buffer.from('fake-builtin-track-bytes')
+const bundledDir = path.join(__dirname, '..', 'assets', 'music')
+fs.mkdirSync(bundledDir, { recursive: true })
+fs.writeFileSync(path.join(bundledDir, BUILTIN_FILE), BUILTIN_BYTES)
+test.after(() => {
+  fs.rmSync(path.join(bundledDir, BUILTIN_FILE), { force: true })
+})
+
 const registered = []
 const ctx = {
   inject: (deps, fn) => { if (deps.includes('settings')) fn({ settings: { register() {} } }) },
@@ -70,9 +83,9 @@ function putPrefs(patch) {
 test('music list merges bundled assets with the user dir (all builtin when user dir is empty)', async () => {
   const { status, body } = await jsonRoute('GET', '/dsh-tarkov/music')
   assert.equal(status, 200)
-  assert.ok(body.tracks.length >= 11, 'expected the 11 bundled tracks, got ' + body.tracks.length)
+  assert.ok(body.tracks.length >= 1, 'expected the test builtin track, got ' + body.tracks.length)
   assert.ok(body.tracks.every((t) => t.builtin === true), 'fresh user dir → all bundled')
-  assert.ok(body.tracks.some((t) => t.name === 'track1'))
+  assert.ok(body.tracks.some((t) => t.name === BUILTIN_NAME))
 })
 
 test('add route streams a file into the user music dir', async () => {
@@ -88,20 +101,20 @@ test('list shows the added user track alongside bundled ones', async () => {
   const { body } = await jsonRoute('GET', '/dsh-tarkov/music')
   const mine = body.tracks.find((t) => t.id === 'my-song.wav')
   assert.equal(mine.builtin, false)
-  assert.ok(body.tracks.length >= 12)
+  assert.ok(body.tracks.length >= 2)
 })
 
 test('delete records builtin removal in prefs (and restore brings it back)', async () => {
-  const builtin = await jsonRoute('POST', '/dsh-tarkov/music/delete', Buffer.from(JSON.stringify({ id: 'track1.mp3' })))
+  const builtin = await jsonRoute('POST', '/dsh-tarkov/music/delete', Buffer.from(JSON.stringify({ id: BUILTIN_FILE })))
   assert.equal(builtin.status, 200)
   assert.equal(builtin.body.ok, true)
   const list = await jsonRoute('GET', '/dsh-tarkov/music')
-  assert.ok(!list.body.tracks.some((t) => t.name === 'track1'), 'removed builtin must leave the list')
+  assert.ok(!list.body.tracks.some((t) => t.name === BUILTIN_NAME), 'removed builtin must leave the list')
   const prefs = await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ music: { removed: [] } })))
   assert.equal(prefs.body.ok, true)
   assert.deepEqual(prefs.body.prefs.music.removed, [])
   const restored = await jsonRoute('GET', '/dsh-tarkov/music')
-  assert.ok(restored.body.tracks.some((t) => t.name === 'track1'), 'cleared removal restores the bundled track')
+  assert.ok(restored.body.tracks.some((t) => t.name === BUILTIN_NAME), 'cleared removal restores the bundled track')
   // User tracks are still deleted from disk.
   const user = await jsonRoute('POST', '/dsh-tarkov/music/delete', Buffer.from(JSON.stringify({ id: 'my-song.wav' })))
   assert.equal(user.status, 200)
@@ -125,20 +138,20 @@ test('prefs round-trip keeps music.disabled', async () => {
 test('audio streams the user file over the bundled same-name file', async () => {
   putPrefs({ music: { enabled: true } })
   const bytes = Buffer.from('user-version')
-  await jsonRoute('POST', '/dsh-tarkov/music/add?name=track1.wav', bytes)
-  const res = dispatch('GET', '/dsh-tarkov/audio?id=track1.wav')
+  await jsonRoute('POST', '/dsh-tarkov/music/add?name=' + BUILTIN_NAME + '.wav', bytes)
+  const res = dispatch('GET', '/dsh-tarkov/audio?id=' + BUILTIN_NAME + '.wav')
   const deadline = Date.now() + 5000
   while (!res.done && Date.now() < deadline) await tick(50)
   assert.equal(res.status, 200)
   assert.equal(Number(res.headers['content-length']), bytes.length)
   assert.equal(Buffer.concat(res.chunks).toString('utf8'), 'user-version')
   // Clean up the shadowing copy so later tests see the bundled file again.
-  fs.unlinkSync(path.join(MUSIC_DIR, 'track1.wav'))
+  fs.unlinkSync(path.join(MUSIC_DIR, BUILTIN_NAME + '.wav'))
 })
 
 test('audio falls back to the bundled assets track', async () => {
-  const assetStat = fs.statSync(path.join(__dirname, '..', 'assets', 'music', 'track1.mp3'))
-  const res = dispatch('GET', '/dsh-tarkov/audio?id=track1.mp3')
+  const assetStat = fs.statSync(path.join(bundledDir, BUILTIN_FILE))
+  const res = dispatch('GET', '/dsh-tarkov/audio?id=' + BUILTIN_FILE)
   const deadline = Date.now() + 15000
   while (!res.done && Date.now() < deadline) await tick(100)
   assert.equal(res.status, 200)

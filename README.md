@@ -2,38 +2,30 @@
 
 以《逃离塔科夫》（Escape from Tarkov）主界面为灵感的 DeepSeek Harness（DSH）Web 界面主题插件：Beta 警告横幅、提示音、背景音乐，全部功能可在设置面板中统一调整。
 
+> 本插件仅以游戏风格为灵感，界面元素均为自研的 CSS / SVG / 代码实现，不包含任何游戏原始文件；背景音乐默认不随包分发，由用户自行提供（见下文「音频文件放在哪里」）。
+
 ## 界面截图
 
 | | |
 | --- | --- |
 | ![新对话 Beta 横幅](docs/screenshots/hero-banner.png) | 新对话界面的 Beta 警告横幅，文案与透明度均可在设置中调整 |
-| ![设置面板](docs/screenshots/settings-panel.png) | 设置 → 插件 → 插件配置 →「塔科夫主题」：三个功能的开关、音量、横幅透明度、曲目管理 |
-| ![BGM 浮窗](docs/screenshots/bgm-dock.png) | 右下角 BGM 浮窗：播放/暂停、随机下一首、选曲、音量；多标签页同时打开时只有 leader 标签页在播放 |
+| ![设置面板](docs/screenshots/settings-panel.png) | 设置 → 插件 → 插件配置 →「塔科夫主题」：各功能开关、音量、横幅透明度、曲目管理 |
+| ![BGM 浮窗](docs/screenshots/bgm-dock.png) | 右下角 BGM 浮窗：播放/暂停、随机下一首、选曲、音量；多个标签页同时打开时只有一个在播放 |
 
 ## 功能
 
-- **新对话横幅**：为新对话界面添加塔科夫风格的 Beta 测试横幅，文案与透明度可在设置中调整。
+- **Beta 警告横幅**：为新对话界面添加塔科夫风格的 Beta 测试横幅，文案与透明度可在设置中调整。
 - **提示音**：会话完成、请求确认、中断失败时播放对应音效；后台标签页也会响；三种场景都可以换成你自己的音频。
-- **背景音乐**：右下角浮窗播放器，曲库由你自己提供（目录放置或面板上传）；多个标签页同时打开时，只有同一个标签页在播放。
+- **背景音乐**：右下角浮窗播放器，曲库由你自己提供（目录放置或面板上传）；多个标签页同时打开时，只有 leader 标签页在播放。
 - **设置面板**：设置 → 插件 → 插件配置 →「塔科夫主题」，开启/关闭各功能、调整音量与横幅透明度、管理音乐曲库（添加 / 删除 / 禁用）。
-
-## 音频素材说明（版权）
-
-本插件**不随包分发任何音频素材**（背景音乐、提示音均未内置），完全由用户自行提供，以避免将受版权保护的游戏资产（如《逃离塔科夫》的解包音频）再分发到公开仓库 / npm 包中。
-
-- 背景音乐 / 提示音等音频请使用你**有权分发**的文件（自有录音、公有领域、CC0 / CC-BY 等明确许可的素材）。
-- 直接从游戏文件解包、或从音乐平台下载的曲目，**无论是否转码、无论项目是否非盈利**，未经权利方书面许可都不得随本插件分发（参见 [Battlestate Games 许可协议](https://www.escapefromtarkov.com/legals/license_agreement) 第 4.2.1–4.2.4、10.1、10.3、10.6 条）。
-- 插件的 MIT 许可证仅覆盖代码，不覆盖你自行加入的音频文件。
 
 ## 音频文件放在哪里
 
 | 位置 | 内容 |
 | --- | --- |
-| `~/.dsh/dsh-tarkov/music/` | 你自己的音乐：**直接把音频文件丢进去即可**（mp3 / wav / ogg / m4a / aac / flac），或在设置面板点「添加音乐」上传（上限 200MB） |
-| `~/.dsh/dsh-tarkov/sounds/` | 提示音：首次启动时把插件自带的默认音效复制出来，直接替换同名文件（done.m4a / approval.m4a / error.m4a）即可换音效 |
+| `~/.dsh/dsh-tarkov/music/` | 背景音乐：**直接把音频文件丢进去即可**（mp3 / wav / ogg / m4a / aac / flac），或在设置面板点「添加音乐」上传（上限 200MB） |
+| `~/.dsh/dsh-tarkov/sounds/` | 提示音：首次启动时会把插件自带的默认音效（done.m4a / approval.m4a / error.m4a）复制到这里，直接替换同名文件即可换音效 |
 | `~/.dsh/dsh-tarkov/prefs.json` | 全部设置（音量、透明度、开关、禁用曲目等） |
-
-> 提示音默认音效为内置的占位音（上传 / 替换即可改为你自己的声音）；建议一并换成有授权的声音。
 
 ## 技术实现（维护参考）
 
@@ -41,13 +33,13 @@
 
 - `/dsh-tarkov/prefs`：设置的读写；PUT 按字段合并，浏览器端自定义提示音以 dataURL 存储（单文件上限 2MB）。
 - `/dsh-tarkov/sfx-poll` + `/dsh-tarkov/sfx`：提示音队列与音频服务；`classifySessionEvent` / `createSfxState` 完成事件分类与去重（`approval/asked → decided` 配对，只响一次；子代理会话不触发）。
-- 曲目库：`assets/music`（随包内置）+ `~/.dsh/dsh-tarkov/music`（用户）按**文件名（不含扩展名）**合并，同名用户文件优先，内置曲目标记 `builtin`。
+- 曲目库：`assets/music`（包内可选内置目录，**默认不含歌曲**——构建者放入音频即成为"内置曲目"，适合自定义发行）+ `~/.dsh/dsh-tarkov/music`（用户）按**文件名（不含扩展名）**合并，同名用户文件优先，内置曲目标记 `builtin`。
 - `/dsh-tarkov/music`（曲目列表）、`/dsh-tarkov/music/add`（原始字节流式上传）、`/dsh-tarkov/music/delete`（用户文件删除磁盘文件；内置曲目写入 `music.removed` 从列表移除，可通过恢复按钮清除）、`/dsh-tarkov/audio`（流式播放）。
 - 注册 settings 命名空间（空 schema）使浏览器卡片出现在插件配置页。
 
 ### Client 半区（`lib/client.js`，直接编辑，无需打包）
 
-- 横幅：MutationObserver 观察 hero 选项行（`[class*='_heroWorkspaceRow']`）后注入；**写 DOM 前先比较值**——无条件的 `textContent` 赋值会对稳定的字符串产生 childList mutation 记录，形成「赋值 → mutation → 再赋值」的自反馈死循环（曾导致页面卡在 “Loading plugins…”）。
+- 横幅：MutationObserver 观察 hero 选项行（`[class*='_heroWorkspaceRow']`）后注入；**写 DOM 前先比较值**——无条件的 `textContent` 赋值会对稳定的字符串产生 childList mutation 记录，形成「赋值 → mutation → 再赋值」的自反馈死循环（曾导致页面卡在 "Loading plugins…"）。
 - BGM：多标签页通过 localStorage 心跳（12s 超时）选举唯一 leader，BroadcastChannel 转发控制命令；被禁用的曲目从播放列表过滤，若正在播放会立即停止。
 - 设置卡片：注册 `settings.plugin.item`（key = host 命名空间），卡片外壳与字段样式复刻原生 PluginCard / fields 的 CSS token（`--dsw-alias-*`）。
 
@@ -84,8 +76,7 @@ dsh plugin --profile web add link:D:\你的路径\dsh-theme-tarkov
 
 - Host 源码在 `src/index.js`，改动后必须 `pnpm run build` 再重启 dsh web；
 - Client 半区直接改 `lib/client.js`（`__ModuleLoader__` 格式即运行时契约，无需打包）；
-- link 安装的插件 Host 半区**无法解析第三方包**（Node 按 realpath 解析），所以产物必须由 esbuild 内联自包含；
-- 沙箱受限环境下 esbuild 会因无法 spawn 子进程而失败，需完整权限运行。
+- link 安装的插件 Host 半区**无法解析第三方包**（Node 按 realpath 解析），所以产物必须由 esbuild 内联为自包含。
 
 ## 已知限制
 

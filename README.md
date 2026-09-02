@@ -2,21 +2,38 @@
 
 以《逃离塔科夫》（Escape from Tarkov）主界面为灵感的 DeepSeek Harness（DSH）Web 界面主题插件：Beta 警告横幅、提示音、背景音乐，全部功能可在设置面板中统一调整。
 
+## 界面截图
+
+| | |
+| --- | --- |
+| ![新对话 Beta 横幅](docs/screenshots/hero-banner.png) | 新对话界面的 Beta 警告横幅，文案与透明度均可在设置中调整 |
+| ![设置面板](docs/screenshots/settings-panel.png) | 设置 → 插件 → 插件配置 →「塔科夫主题」：三个功能的开关、音量、横幅透明度、曲目管理 |
+| ![BGM 浮窗](docs/screenshots/bgm-dock.png) | 右下角 BGM 浮窗：播放/暂停、随机下一首、选曲、音量；多标签页同时打开时只有 leader 标签页在播放 |
+
 ## 功能
 
 - **新对话横幅**：为新对话界面添加塔科夫风格的 Beta 测试横幅，文案与透明度可在设置中调整。
 - **提示音**：会话完成、请求确认、中断失败时播放对应音效；后台标签页也会响；三种场景都可以换成你自己的音频。
-- **背景音乐**：右下角浮窗播放器，内置塔科夫 BGM 曲库，也可添加自己的音乐；多个标签页同时打开时，只有同一个标签页在播放。
+- **背景音乐**：右下角浮窗播放器，曲库由你自己提供（目录放置或面板上传）；多个标签页同时打开时，只有同一个标签页在播放。
 - **设置面板**：设置 → 插件 → 插件配置 →「塔科夫主题」，开启/关闭各功能、调整音量与横幅透明度、管理音乐曲库（添加 / 删除 / 禁用）。
+
+## 音频素材说明（版权）
+
+本插件**不随包分发任何音频素材**（背景音乐、提示音均未内置），完全由用户自行提供，以避免将受版权保护的游戏资产（如《逃离塔科夫》的解包音频）再分发到公开仓库 / npm 包中。
+
+- 背景音乐 / 提示音等音频请使用你**有权分发**的文件（自有录音、公有领域、CC0 / CC-BY 等明确许可的素材）。
+- 直接从游戏文件解包、或从音乐平台下载的曲目，**无论是否转码、无论项目是否非盈利**，未经权利方书面许可都不得随本插件分发（参见 [Battlestate Games 许可协议](https://www.escapefromtarkov.com/legals/license_agreement) 第 4.2.1–4.2.4、10.1、10.3、10.6 条）。
+- 插件的 MIT 许可证仅覆盖代码，不覆盖你自行加入的音频文件。
 
 ## 音频文件放在哪里
 
 | 位置 | 内容 |
 | --- | --- |
-| `assets/music/`（插件包内） | 内置曲目（128kbps mp3，约 40MB）随插件提供；可在设置中「删除」——仅从曲库列表移出（记录在 prefs），可一键恢复，不删包内文件 |
-| `~/.dsh/dsh-tarkov/music/` | 你自己的音乐：**直接把音频文件丢进去即可**（mp3 / wav / ogg / m4a / aac / flac），或在设置面板点「添加音乐」上传（上限 200MB）。与内置曲目同名时，你的文件优先播放 |
-| `~/.dsh/dsh-tarkov/sounds/` | 提示音：首次启动时从插件复制出来，直接替换同名文件（done.m4a / approval.m4a / error.m4a）即可换音效 |
-| `~/.dsh/dsh-tarkov/prefs.json` | 全部设置（音量、透明度、语音开关、禁用曲目等） |
+| `~/.dsh/dsh-tarkov/music/` | 你自己的音乐：**直接把音频文件丢进去即可**（mp3 / wav / ogg / m4a / aac / flac），或在设置面板点「添加音乐」上传（上限 200MB） |
+| `~/.dsh/dsh-tarkov/sounds/` | 提示音：首次启动时把插件自带的默认音效复制出来，直接替换同名文件（done.m4a / approval.m4a / error.m4a）即可换音效 |
+| `~/.dsh/dsh-tarkov/prefs.json` | 全部设置（音量、透明度、开关、禁用曲目等） |
+
+> 提示音默认音效为内置的占位音（上传 / 替换即可改为你自己的声音）；建议一并换成有授权的声音。
 
 ## 技术实现（维护参考）
 
@@ -24,7 +41,7 @@
 
 - `/dsh-tarkov/prefs`：设置的读写；PUT 按字段合并，浏览器端自定义提示音以 dataURL 存储（单文件上限 2MB）。
 - `/dsh-tarkov/sfx-poll` + `/dsh-tarkov/sfx`：提示音队列与音频服务；`classifySessionEvent` / `createSfxState` 完成事件分类与去重（`approval/asked → decided` 配对，只响一次；子代理会话不触发）。
-- 曲目库：`assets/music`（内置，128kbps mp3）+ `~/.dsh/dsh-tarkov/music`（用户）按**文件名（不含扩展名）**合并，同名用户文件优先，内置曲目标记 `builtin`。
+- 曲目库：`assets/music`（随包内置）+ `~/.dsh/dsh-tarkov/music`（用户）按**文件名（不含扩展名）**合并，同名用户文件优先，内置曲目标记 `builtin`。
 - `/dsh-tarkov/music`（曲目列表）、`/dsh-tarkov/music/add`（原始字节流式上传）、`/dsh-tarkov/music/delete`（用户文件删除磁盘文件；内置曲目写入 `music.removed` 从列表移除，可通过恢复按钮清除）、`/dsh-tarkov/audio`（流式播放）。
 - 注册 settings 命名空间（空 schema）使浏览器卡片出现在插件配置页。
 
@@ -44,13 +61,9 @@
 
 ```bash
 dsh plugin --profile web add dsh-theme-tarkov
-# 本地开发（link 方式，改代码后重启 dsh web 生效）
-dsh plugin --profile web add link:D:\DSH-workspace\dsh-theme-tarkov
 ```
 
 `dsh plugin add` 会把本包加入 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`，bundle 层**自动应用**包内 `cordis.patch.yml`（即插件行 `id: tarkov`）。重启 dsh web 即生效。
-
-> ⚠️ 不要手动在 `~/.dsh/profiles/web/cordis.patch.yml` 里再次 insert `id: tarkov`——bundle 层已注册一次，重复 id 会触发 `duplicate loader entry id: tarkov`，dsh web 启动即崩溃（2026-09-02 踩坑）。README 中"手动挂补丁行"的步骤仅适用于不经过 `add` 命令、手动把包放入 node_modules 的旧安装路径。
 
 ## 开发
 
@@ -59,6 +72,12 @@ pnpm install          # 安装 esbuild / @deepseek-ai/schemastery（dev 依赖�
 pnpm run build        # 打包 src/index.js → lib/index.js（内联第三方依赖为自包含产物）
 node --check lib/index.js && node --check lib/client.js   # 语法检查
 node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/client-smoke.mjs
+```
+
+本地开发（link 方式，改代码后重启 dsh web 生效）：
+
+```bash
+dsh plugin --profile web add link:D:\你的路径\dsh-theme-tarkov
 ```
 
 注意：
@@ -78,7 +97,7 @@ node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/clie
 dsh plugin --profile web remove dsh-theme-tarkov
 ```
 
-注意：`dsh plugin rm/remove` 会从 profile 的 `dsh.profile.bundles` 移除本包，包内 `cordis.patch.yml` 由 bundle 层自动应用并随之卸载，无需手动清理。若曾在 `~/.dsh/profiles/web/cordis.patch.yml` 里手动插入过 `id: tarkov`（旧路径，不符合规范），需删掉该行再重启。
+`dsh plugin rm/remove` 会从 profile 的 `dsh.profile.bundles` 移除本包，包内 `cordis.patch.yml` 由 bundle 层自动应用并随之卸载，无需手动清理。
 
 ## License
 

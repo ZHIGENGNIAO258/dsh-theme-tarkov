@@ -25,7 +25,6 @@
 > 目前通过 git clone 安装（npm 发布后可直接 `dsh plugin --profile web add dsh-theme-tarkov` 一键安装）。
 
 ```bash
-# 克隆仓库（仓库为私有：需要能访问该仓库的 GitHub 账号）
 git clone https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov.git
 
 # 以 link 方式挂载到 dsh web（把 <绝对路径> 换成上面的克隆路径）

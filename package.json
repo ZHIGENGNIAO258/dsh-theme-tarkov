@@ -4,6 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov.git"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
@@ -12,7 +16,6 @@
   "files": [
     "lib",
     "assets",
-    "tests",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"

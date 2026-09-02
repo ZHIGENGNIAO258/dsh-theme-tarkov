@@ -1,6 +1,7 @@
 # dsh-theme-tarkov
+![ Beta 横幅](docs/screenshots/banner.png)
 
-以《逃离塔科夫》（Escape from Tarkov）主界面为灵感的 DeepSeek Harness（DSH）Web 界面主题插件：Beta 警告横幅、提示音、背景音乐，全部功能可在设置面板中统一调整。
+以《逃离塔科夫》（Escape from Tarkov）主界面为灵感的 DeepSeek Harness（DSH）Web 界面主题插件：Beta 警告横幅、提示音、背景音乐。
 
 > 本插件仅以游戏风格为灵感，界面元素均为 CSS / SVG / 代码实现，不包含任何游戏原始文件；背景音乐默认不随包分发，由用户自行提供（见下文「音频文件放在哪里」）。
 

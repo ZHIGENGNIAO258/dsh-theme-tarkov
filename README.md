@@ -20,13 +20,31 @@
 - **背景音乐**：右下角浮窗播放器，曲库由你自己提供（目录放置或面板上传）；多个标签页同时打开时，只有 leader 标签页在播放。
 - **设置面板**：设置 → 插件 → 插件配置 →「塔科夫主题」，开启/关闭各功能、调整音量与横幅透明度、管理音乐曲库（添加 / 删除 / 禁用）。
 
-## 音频文件放在哪里
+## 安装
+
+> 目前通过 git clone 安装（npm 发布后可直接 `dsh plugin --profile web add dsh-theme-tarkov` 一键安装）。
+
+```bash
+# 克隆仓库（仓库为私有：需要能访问该仓库的 GitHub 账号）
+git clone https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov.git
+
+# 以 link 方式挂载到 dsh web（把 <绝对路径> 换成上面的克隆路径）
+dsh plugin --profile web add link:<绝对路径>
+```
+
+`dsh plugin add` 会把本包加入 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`，bundle 层**自动应用**包内 `cordis.patch.yml`（即插件行 `id: tarkov`）。重启 dsh web 即生效。
+
+注意：link 安装后**请保留克隆目录不要删除**——profile 通过软链接引用它；之后升级插件只需 `git pull` 再重启 dsh web。
+
+## 配置：音频文件放在哪里
 
 | 位置 | 内容 |
 | --- | --- |
 | `~/.dsh/dsh-tarkov/music/` | 背景音乐：**直接把音频文件丢进去即可**（mp3 / wav / ogg / m4a / aac / flac），或在设置面板点「添加音乐」上传（上限 200MB） |
 | `~/.dsh/dsh-tarkov/sounds/` | 提示音：首次启动时会把插件自带的默认音效（done.m4a / approval.m4a / error.m4a）复制到这里，直接替换同名文件即可换音效 |
 | `~/.dsh/dsh-tarkov/prefs.json` | 全部设置（音量、透明度、开关、禁用曲目等） |
+
+安装后打开设置 → 插件 → 插件配置 →「塔科夫主题」，即可开启/关闭各功能、调整音量和横幅透明度、管理曲库。
 
 ## 技术实现（维护参考）
 
@@ -50,14 +68,6 @@
 - `tests/host-routes.test.mjs`：host 路由集成测试（隔离 DSH_HOME，不碰真实数据）——曲库合并、添加/删除、流式播放；
 - `tests/client-smoke.mjs`：client 初始化与 apply() 冒烟。
 
-## 安装
-
-```bash
-dsh plugin --profile web add dsh-theme-tarkov
-```
-
-`dsh plugin add` 会把本包加入 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`，bundle 层**自动应用**包内 `cordis.patch.yml`（即插件行 `id: tarkov`）。重启 dsh web 即生效。
-
 ## 开发
 
 ```bash
@@ -67,11 +77,7 @@ node --check lib/index.js && node --check lib/client.js   # 语法检查
 node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/client-smoke.mjs
 ```
 
-本地开发（link 方式，改代码后重启 dsh web 生效）：
-
-```bash
-dsh plugin --profile web add link:D:\你的路径\dsh-theme-tarkov
-```
+本地开发直接用上面的「安装」link 方式（clone 后改代码，重启 dsh web 生效）。
 
 注意：
 
@@ -89,7 +95,7 @@ dsh plugin --profile web add link:D:\你的路径\dsh-theme-tarkov
 dsh plugin --profile web remove dsh-theme-tarkov
 ```
 
-`dsh plugin rm/remove` 会从 profile 的 `dsh.profile.bundles` 移除本包，包内 `cordis.patch.yml` 由 bundle 层自动应用并随之卸载，无需手动清理。
+`dsh plugin rm/remove` 会从 profile 的 `dsh.profile.bundles` 移除本包，包内 `cordis.patch.yml` 由 bundle 层自动应用并随之卸载，无需手动清理。link 方式安装的克隆目录可一并删除。
 
 ## License
 

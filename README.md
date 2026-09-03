@@ -85,6 +85,14 @@ node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/clie
 
 本地开发直接用上面的「安装」link 方式（clone 后改代码，重启 dsh web 生效）。
 
+### 发版（维护者）
+
+发布已启用 npmjs **Trusted Publishing**（GitHub Actions OIDC，无需 npm token，见 `.github/workflows/npm-publish.yml`，推送 `v*` 标签自动构建、测试并发布，自动生成 provenance）：
+
+```bash
+npm version patch -m "release v%s" && git push --follow-tags
+```
+
 注意：
 
 - Host 源码在 `src/index.js`，改动后必须 `pnpm run build` 再重启 dsh web；

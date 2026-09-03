@@ -22,18 +22,25 @@
 
 ## 安装
 
-> 目前通过 git clone 安装（npm 发布后可直接 `dsh plugin --profile web add dsh-theme-tarkov` 一键安装）。
+> **方式一（推荐）：npm 一键安装**
+
+```bash
+dsh plugin --profile web add dsh-theme-tarkov
+```
+
+> **方式二：git clone + link 安装**
 
 ```bash
 git clone https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov.git
-
-# 以 link 方式挂载到 dsh web（把 <绝对路径> 换成上面的克隆路径）
-dsh plugin --profile web add link:<绝对路径>
+dsh plugin --profile web add link:<绝对路径>   # 把 <绝对路径> 换成上面的克隆目录
 ```
 
 `dsh plugin add` 会把本包加入 `~/.dsh/profiles/web/package.json` 的 `dsh.profile.bundles`，bundle 层**自动应用**包内 `cordis.patch.yml`（即插件行 `id: tarkov`）。重启 dsh web 即生效。
 
-注意：link 安装后**请保留克隆目录不要删除**——profile 通过软链接引用它；之后升级插件只需 `git pull` 再重启 dsh web。
+- **npm 安装**：无需保留任何目录；升级运行 `dsh plugin --profile web update dsh-theme-tarkov` 后重启 dsh web。
+- **link 安装**：**请保留克隆目录不要删除**——profile 通过软链接引用它；升级只需 `git pull` 再重启 dsh web。
+
+> 提示：包刚发布后 24 小时内安装可能被 DSH web profile 的「最低发布年龄」策略（`minimumReleaseAge: 24h`）拦截；稍等重试，或把 `dsh-theme-tarkov` 加入 profile `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude`。
 
 ## 配置：音频文件放在哪里
 

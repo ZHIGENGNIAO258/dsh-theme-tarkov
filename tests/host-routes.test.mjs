@@ -158,3 +158,107 @@ test('audio falls back to the bundled assets track', async () => {
   assert.equal(Number(res.headers['content-length']), assetStat.size)
   assert.equal(Buffer.concat(res.chunks).length, assetStat.size)
 })
+
+// ---- desktop pet routes ----
+const VOICE_DIR = path.join(tmp, 'dsh-tarkov', 'voice')
+const PET_DIR = path.join(tmp, 'dsh-tarkov', 'pet')
+// Bundled voices live in the package's assets/pet/voice and are served from
+// there; the tests only assert against files that actually ship.
+const BUNDLED_VOICE_DIR = path.join(__dirname, '..', 'assets', 'pet', 'voice')
+const bundledVoiceNames = fs.existsSync(BUNDLED_VOICE_DIR)
+  ? fs.readdirSync(BUNDLED_VOICE_DIR).filter((n) => /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(n)).sort()
+  : []
+const BUNDLED_ID = bundledVoiceNames[0]
+assert.ok(BUNDLED_ID, 'assets/pet/voice must ship at least one audio file')
+
+test('pet voice list merges bundled voices with user clips', async () => {
+  fs.mkdirSync(VOICE_DIR, { recursive: true })
+  fs.writeFileSync(path.join(VOICE_DIR, 'my-line.wav'), Buffer.from('RIFF....WAVE-user-voice'))
+  const { status, body } = await jsonRoute('GET', '/dsh-tarkov/pet/voice')
+  assert.equal(status, 200)
+  const builtin = body.items.filter((i) => i.builtin === true)
+  const user = body.items.filter((i) => i.builtin === false)
+  assert.equal(builtin.length, bundledVoiceNames.length, 'every shipped voice must be listed')
+  assert.ok(builtin.some((i) => i.id === BUNDLED_ID), 'first shipped clip expected')
+  assert.ok(user.some((i) => i.id === 'my-line.wav'), 'user clip must join the library')
+})
+
+test('pet audio streams user clips and bundled placeholders', async () => {
+  const res1 = dispatch('GET', '/dsh-tarkov/pet/audio?id=my-line.wav&kind=user')
+  const deadline = Date.now() + 5000
+  while (!res1.done && Date.now() < deadline) await tick(50)
+  assert.equal(res1.status, 200)
+  assert.equal(Buffer.concat(res1.chunks).toString('utf8'), 'RIFF....WAVE-user-voice')
+  const res2 = dispatch('GET', '/dsh-tarkov/pet/audio?id=' + BUNDLED_ID + '&kind=builtin')
+  const deadline2 = Date.now() + 5000
+  while (!res2.done && Date.now() < deadline2) await tick(50)
+  assert.equal(res2.status, 200)
+  assert.equal(Number(res2.headers['content-length']), fs.statSync(path.join(BUNDLED_VOICE_DIR, BUNDLED_ID)).size)
+  assert.ok(Buffer.concat(res2.chunks).length > 0, 'bundled voice must stream')
+})
+
+test('pet audio rejects traversal and unknown ids', async () => {
+  const bad = dispatch('GET', '/dsh-tarkov/pet/audio?id=..%2Fprefs.json&kind=user')
+  await tick(30)
+  assert.equal(bad.status, 400)
+  const nope = dispatch('GET', '/dsh-tarkov/pet/audio?id=nope.wav&kind=builtin')
+  await tick(30)
+  assert.equal(nope.status, 404)
+  const badExt = dispatch('GET', '/dsh-tarkov/pet/audio?id=evil.txt&kind=user')
+  await tick(30)
+  assert.equal(badExt.status, 400)
+  const noExt = dispatch('GET', '/dsh-tarkov/pet/audio?id=nope&kind=user')
+  await tick(30)
+  assert.equal(noExt.status, 400)
+})
+
+test('pet image falls back to the bundled skin and honours user pet.png', async () => {
+  const res = dispatch('GET', '/dsh-tarkov/pet/image')
+  const deadline = Date.now() + 5000
+  while (!res.done && Date.now() < deadline) await tick(50)
+  assert.equal(res.status, 200)
+  assert.ok(res.headers['content-type'].includes('image/png'), 'bundled altyn.png must be served')
+  // A user pet.png wins.
+  fs.mkdirSync(PET_DIR, { recursive: true })
+  fs.writeFileSync(path.join(PET_DIR, 'pet.png'), Buffer.from('user-pet-image-bytes'))
+  const res2 = dispatch('GET', '/dsh-tarkov/pet/image?ts=1')
+  const deadline2 = Date.now() + 5000
+  while (!res2.done && Date.now() < deadline2) await tick(50)
+  assert.equal(Buffer.concat(res2.chunks).toString('utf8'), 'user-pet-image-bytes')
+  fs.unlinkSync(path.join(PET_DIR, 'pet.png'))
+})
+
+test('pet prefs sanitize: out-of-range falls back, valid values pass', async () => {
+  // Out-of-range values fall back to defaults (num semantics: invalid → default).
+  const bad = await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { size: 9999, volume: -5, enabled: 'yes' } })))
+  assert.equal(bad.status, 200)
+  assert.equal(bad.body.prefs.pet.size, 160)
+  assert.equal(bad.body.prefs.pet.volume, 70)
+  assert.equal(bad.body.prefs.pet.enabled, true)
+  // Valid values pass through.
+  const ok = await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { size: 200, volume: 55, enabled: false } })))
+  assert.equal(ok.body.prefs.pet.size, 200)
+  assert.equal(ok.body.prefs.pet.volume, 55)
+  assert.equal(ok.body.prefs.pet.enabled, false)
+  // Restore for later route tests.
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { enabled: true } })))
+})
+
+test('prompt sfx serves bundled clip and honours user override', async () => {
+  // Bundled assets/sfx/done.m4a is streamed straight from the package (never copied).
+  const res = dispatch('GET', '/dsh-tarkov/sfx?id=done')
+  const deadline = Date.now() + 5000
+  while (!res.done && Date.now() < deadline) await tick(50)
+  assert.equal(res.status, 200)
+  assert.ok(res.headers['content-type'].includes('audio/mp4'))
+  assert.ok(Buffer.concat(res.chunks).length > 0)
+  // A user file done.wav in the sounds dir wins over the bundled clip.
+  fs.mkdirSync(path.join(tmp, 'dsh-tarkov', 'sounds'), { recursive: true })
+  fs.writeFileSync(path.join(tmp, 'dsh-tarkov', 'sounds', 'done.wav'), Buffer.from('RIFF....WAVE-custom-done'))
+  const res2 = dispatch('GET', '/dsh-tarkov/sfx?id=done')
+  const deadline2 = Date.now() + 5000
+  while (!res2.done && Date.now() < deadline2) await tick(50)
+  assert.equal(res2.status, 200)
+  assert.equal(res2.headers['content-type'], 'audio/wav')
+  assert.equal(Buffer.concat(res2.chunks).toString('utf8'), 'RIFF....WAVE-custom-done')
+})

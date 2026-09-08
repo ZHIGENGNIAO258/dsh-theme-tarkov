@@ -14,11 +14,24 @@ import z from '@deepseek-ai/schemastery'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ASSETS_SFX = path.join(__dirname, '..', 'assets', 'sfx')
 const ASSETS_MUSIC = path.join(__dirname, '..', 'assets', 'music')
+const ASSETS_PET = path.join(__dirname, '..', 'assets', 'pet')
+const ASSETS_VOICE = path.join(ASSETS_PET, 'voice')
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const DATA_DIR = path.join(DSH_HOME, 'dsh-tarkov')
 const SOUNDS_DIR = path.join(DATA_DIR, 'sounds')
 const MUSIC_DIR = path.join(DATA_DIR, 'music')
+const VOICE_DIR = path.join(DATA_DIR, 'voice')
+const PET_DIR = path.join(DATA_DIR, 'pet')
 const PREFS_FILE = path.join(DATA_DIR, 'prefs.json')
+const PET_IMAGE_EXTS = ['png', 'gif', 'webp', 'jpg', 'jpeg']
+// Status-line copy pool: plain text files shipped inside the package, read per
+// request so editing them needs only a page refresh (no host restart). The
+// browser half cannot touch the filesystem, so it fetches them through
+// GET /dsh-tarkov/status-texts.
+const ASSETS_STATUS = path.join(__dirname, '..', 'assets', 'status')
+const STATUS_LANGS = ['zh', 'en']
+const STATUS_TEXT_MAX = 200
+const STATUS_POOL_MAX = 200
 const MAX_PENDING = 3
 const MAX_MUSIC_BYTES = 200 * 1024 * 1024
 const SFX_KINDS = ['done', 'approval', 'error']
@@ -36,6 +49,11 @@ const MIME = {
   m4a: 'audio/mp4',
   aac: 'audio/aac',
   flac: 'audio/flac',
+  png: 'image/png',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
 }
 
 export const DEFAULT_PREFS = {
@@ -61,6 +79,11 @@ export const DEFAULT_PREFS = {
     // client restores them (the files are never removed from the package).
     removed: [],
   },
+  pet: {
+    enabled: true,
+    size: 160,
+    volume: 70,
+  },
 }
 
 /**
@@ -71,7 +94,7 @@ export const DEFAULT_PREFS = {
 export function mergePrefs(base, patch) {
   const out = JSON.parse(JSON.stringify(base))
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) return out
-  for (const group of ['banner', 'sfx', 'music']) {
+  for (const group of ['banner', 'sfx', 'music', 'pet']) {
     const p = patch[group]
     if (p === null || typeof p !== 'object' || Array.isArray(p)) continue
     out[group] = { ...out[group], ...p }
@@ -138,6 +161,12 @@ export function sanitizePrefs(raw) {
     idList(m.disabled, 'disabled')
     idList(m.removed, 'removed')
   }
+  const p = raw.pet
+  if (p && typeof p === 'object') {
+    if (typeof p.enabled === 'boolean') out.pet.enabled = p.enabled
+    out.pet.size = Math.round(num(p.size, 80, 240, out.pet.size))
+    out.pet.volume = num(p.volume, 0, 100, out.pet.volume)
+  }
   return out
 }
 
@@ -157,6 +186,49 @@ function savePrefs(prefs) {
   } catch (error) {
     console.error('dsh-theme-tarkov: prefs write failed', error)
   }
+}
+
+/**
+ * Parse one status pool file into display entries: one entry per line, '#'
+ * comments and blank lines dropped, trimmed, deduped, length- and count-capped.
+ * Pure so tests can drive it directly without touching the filesystem.
+ * @param text - raw file contents (anything else yields an empty pool).
+ * @returns the ordered pool.
+ */
+export function parseStatusTexts(text) {
+  const out = []
+  const seen = new Set()
+  if (typeof text !== 'string') return out
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith('#')) continue
+    if (line.length > STATUS_TEXT_MAX) continue
+    if (seen.has(line)) continue
+    seen.add(line)
+    out.push(line)
+    if (out.length >= STATUS_POOL_MAX) break
+  }
+  return out
+}
+
+/**
+ * Read every bundled status pool. An absent or empty pool is reported as an
+ * empty list and an all-empty result disables the feature, so the status line
+ * keeps its stock copy instead of going blank.
+ * @returns { enabled, texts: { zh: string[], en: string[] } }
+ */
+function readStatusTexts() {
+  const texts = {}
+  for (const lang of STATUS_LANGS) {
+    let raw = ''
+    try {
+      raw = fs.readFileSync(path.join(ASSETS_STATUS, 'texts.' + lang + '.txt'), 'utf8')
+    } catch (error) {
+      raw = ''
+    }
+    texts[lang] = parseStatusTexts(raw)
+  }
+  return { enabled: STATUS_LANGS.some((lang) => texts[lang].length > 0), texts }
 }
 
 /**
@@ -222,21 +294,10 @@ export function createSfxState() {
   }
 }
 
-// Seed the bundled m4a sounds into $DSH_HOME/dsh-tarkov/sounds on first run.
-// Only missing files are copied, so a user-replaced sound is never overwritten.
-function ensureSoundsDir() {
-  try {
-    fs.mkdirSync(SOUNDS_DIR, { recursive: true })
-    for (const kind of SFX_KINDS) {
-      const target = path.join(SOUNDS_DIR, `${kind}.m4a`)
-      if (fs.existsSync(target)) continue
-      const src = path.join(ASSETS_SFX, `${kind}.m4a`)
-      if (fs.existsSync(src)) fs.copyFileSync(src, target)
-    }
-  } catch (error) {
-    console.error('dsh-theme-tarkov: sound seeding failed', error)
-  }
-}
+// Prompt-sound policy (all plugin assets are served from the package, never
+// copied): the bundled assets/sfx/<kind>.m4a clips are streamed by the /sfx
+// route itself; a user file in ~/.dsh/dsh-tarkov/sounds/<kind>.<ext> overrides
+// the bundled clip without touching it.
 
 // User music lives in $DSH_HOME/dsh-tarkov/music; bundled tracks ship in
 // assets/music and are served directly (never copied), so plugin upgrades
@@ -247,6 +308,59 @@ function ensureMusicDir() {
   } catch (error) {
     console.error('dsh-theme-tarkov: music dir failed', error)
   }
+}
+
+// Desktop-pet data dirs: ~/.dsh/dsh-tarkov/voice for click-voice clips and
+// ~/.dsh/dsh-tarkov/pet for a custom pet image (pet.png / pet.gif / …).
+function ensurePetDirs() {
+  try {
+    fs.mkdirSync(VOICE_DIR, { recursive: true })
+    fs.mkdirSync(PET_DIR, { recursive: true })
+  } catch (error) {
+    console.error('dsh-theme-tarkov: pet dirs failed', error)
+  }
+}
+
+// Bundled voice library: every audio file in assets/pet/voice is served
+// straight from the package (never copied to the user dir); users drop their
+// own clips into ~/.dsh/dsh-tarkov/voice/ and they join the same random pool.
+function listVoiceItems() {
+  ensurePetDirs()
+  const items = []
+  for (const t of scanDir(ASSETS_VOICE)) items.push({ id: t.id, name: t.name, builtin: true })
+  for (const t of scanDir(VOICE_DIR)) items.push({ id: t.id, name: t.name, builtin: false })
+  return items
+}
+
+// Locate the camera-ready pet image: a user file in PET_DIR wins, otherwise
+// the bundled altyn.png placeholder skin.
+function resolvePetImage() {
+  for (const ext of PET_IMAGE_EXTS) {
+    const cand = path.join(PET_DIR, 'pet.' + ext)
+    try {
+      if (fs.statSync(cand).isFile()) return cand
+    } catch (error) {
+      /* not there */
+    }
+  }
+  return path.join(ASSETS_PET, 'altyn.png')
+}
+
+// Stream one file with a length header; caller guarantees the path is safe.
+function streamFile(full, res) {
+  const stat = fs.statSync(full)
+  if (!stat.isFile()) throw new Error('not a file')
+  const ext = (path.extname(full) || '').slice(1).toLowerCase()
+  const mime = MIME[ext] || 'application/octet-stream'
+  res.writeHead(200, {
+    'content-type': mime,
+    'content-length': String(stat.size),
+    'accept-ranges': 'bytes',
+    'cache-control': 'public, max-age=3600',
+  })
+  const stream = fs.createReadStream(full)
+  stream.on('error', () => res.destroy())
+  stream.pipe(res)
 }
 
 const AUDIO_RE = /^(.+)\.([A-Za-z0-9]+)$/
@@ -300,7 +414,7 @@ export const name = 'tarkov'
 export const inject = ['webServer', 'fs']
 
 export function apply(ctx) {
-  ensureSoundsDir()
+  ensurePetDirs()
 
   // Claim the Settings → Plugins → 插件配置 card seat: the browser half
   // registers settings.plugin.item keyed by this exact namespace and the tab
@@ -316,10 +430,15 @@ export function apply(ctx) {
   // Post-commit session-log firehose. Subagent sessions must not ring; the
   // listener stays mounted but short-circuits while the sfx feature is off
   // (route registration is what the "feature not loaded" promise covers).
+  // It also paces the status-line copy: every completed step bumps statusSeq,
+  // which the browser half polls so its entry rotates as work progresses. The
+  // client has no session-event stream of its own, so the counter lives here.
+  let statusSeq = 0
   ctx.on('session/event', (session, event) => {
-    if (!prefs.sfx.enabled) return
     if (session === null || typeof session !== 'object') return
     if (session.header && session.header.origin === 'subagent') return
+    if (event !== null && typeof event === 'object' && event.type === 'step/end') statusSeq += 1
+    if (!prefs.sfx.enabled) return
     state.handle(session.id, event)
   })
 
@@ -328,23 +447,26 @@ export function apply(ctx) {
     res.end(JSON.stringify(body))
   }
 
-  // Locate SOUNDS_DIR/<kind>.<ext>, preferring anything the user dropped in.
-  async function resolveSfx(kind) {
-    let entries
+  // Prompt sound for a kind: a user file SOUNDS_DIR/<kind>.<ext> wins (drop
+  // one in to replace it), otherwise the bundled assets/sfx/<kind>.m4a is
+  // served straight from the package. The bundle is never copied into the
+  // user dir.
+  function resolveSfx(kind) {
     try {
-      const dir = await ctx.fs.resolve(SOUNDS_DIR)
-      entries = await ctx.fs.listDir(dir)
+      for (const name of fs.readdirSync(SOUNDS_DIR)) {
+        const dot = name.lastIndexOf('.')
+        if (dot <= 0 || dot === name.length - 1) continue
+        const base = name.slice(0, dot)
+        const ext = name.slice(dot + 1).toLowerCase()
+        if (base !== kind || !MIME[ext]) continue
+        const full = path.join(SOUNDS_DIR, name)
+        if (fs.statSync(full).isFile()) return { full, mime: MIME[ext] }
+      }
     } catch (error) {
-      return null
+      /* no user dir yet */
     }
-    const re = new RegExp(`^${kind}\\.([A-Za-z0-9]+)$`)
-    for (const entry of entries) {
-      if (!entry || entry.type !== 'file' || typeof entry.name !== 'string') continue
-      const match = re.exec(entry.name)
-      if (!match) continue
-      const mime = MIME[match[1].toLowerCase()] || 'audio/mpeg'
-      return { name: entry.name, mime }
-    }
+    const bundled = path.join(ASSETS_SFX, kind + '.m4a')
+    if (fs.existsSync(bundled)) return { full: bundled, mime: 'audio/mp4' }
     return null
   }
 
@@ -396,7 +518,7 @@ export function apply(ctx) {
       routes.push({
         kind: 'exact',
         path: '/dsh-tarkov/sfx',
-        handler: async (req, res) => {
+        handler: (req, res) => {
           let id = ''
           try {
             id = new URL(req.url, 'http://dsh.local').searchParams.get('id') || ''
@@ -409,16 +531,9 @@ export function apply(ctx) {
             return
           }
           try {
-            const found = await resolveSfx(id)
+            const found = resolveSfx(id)
             if (found === null) throw new Error('no sound for ' + id)
-            const target = await ctx.fs.resolve(SOUNDS_DIR + path.sep + found.name)
-            const bytes = await ctx.fs.readBytes(target, undefined, 10 * 1024 * 1024)
-            res.writeHead(200, {
-              'content-type': found.mime,
-              'content-length': String(bytes.length),
-              'cache-control': 'public, max-age=3600',
-            })
-            res.end(Buffer.from(bytes))
+            streamFile(found.full, res)
           } catch (error) {
             res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
             res.end('not found')
@@ -426,6 +541,25 @@ export function apply(ctx) {
         },
       })
     }
+    // Status-line copy pool. Always mounted (like the music library) so the
+    // browser half can pick it up before any feature toggle is involved; read
+    // fresh per request, so editing assets/status/*.txt needs no restart.
+    routes.push({
+      kind: 'exact',
+      path: '/dsh-tarkov/status-texts',
+      handler: (req, res) => {
+        sendJson(res, readStatusTexts())
+      },
+    })
+    // Monotonic step counter for the status-line copy: the browser half polls
+    // it and rotates its entry whenever the number moves.
+    routes.push({
+      kind: 'exact',
+      path: '/dsh-tarkov/status-poll',
+      handler: (req, res) => {
+        sendJson(res, { seq: statusSeq })
+      },
+    })
     // Music library routes stay available even while the feature is off so the
     // settings card can manage the library before enabling playback.
     routes.push({
@@ -533,6 +667,70 @@ export function apply(ctx) {
         req.on('error', () => { /* socket error */ })
       },
     })
+    // ---- desktop pet routes (image / voice list / voice audio) ----
+    // The voice list stays available while the feature is off so the client
+    // can still report the directory hint; the image route must exist for the
+    // pet to ever render, so both live together with the feature gate.
+    if (prefs.pet.enabled) {
+      routes.push({
+        kind: 'exact',
+        path: '/dsh-tarkov/pet/voice',
+        handler: (req, res) => {
+          sendJson(res, { items: listVoiceItems(), dir: VOICE_DIR })
+        },
+      })
+      routes.push({
+        kind: 'exact',
+        path: '/dsh-tarkov/pet/audio',
+        handler: (req, res) => {
+          let id = ''
+          let kind = 'user'
+          try {
+            const query = new URL(req.url, 'http://dsh.local').searchParams
+            id = query.get('id') || ''
+            kind = query.get('kind') || 'user'
+          } catch (error) {
+            /* ignore */
+          }
+          const idMatch = AUDIO_RE.exec(id)
+          if (!idMatch || !MIME[idMatch[2].toLowerCase()] || id.includes('/') || id.includes('\\') || id.includes('..')) {
+            res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end('bad id')
+            return
+          }
+          let full = null
+          if (kind === 'builtin') {
+            full = path.join(ASSETS_VOICE, id)
+          } else if (kind === 'user') {
+            full = path.join(VOICE_DIR, id)
+          }
+          if (full === null) {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end('not found')
+            return
+          }
+          try {
+            streamFile(full, res)
+          } catch (error) {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end('not found')
+          }
+        },
+      })
+      routes.push({
+        kind: 'exact',
+        path: '/dsh-tarkov/pet/image',
+        handler: (req, res) => {
+          try {
+            streamFile(resolvePetImage(), res)
+          } catch (error) {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end('not found')
+          }
+        },
+      })
+    }
+
     if (prefs.music.enabled) {
       routes.push({
         kind: 'exact',
@@ -553,19 +751,7 @@ export function apply(ctx) {
           const userPath = path.join(MUSIC_DIR, id)
           const full = fs.existsSync(userPath) ? userPath : path.join(ASSETS_MUSIC, id)
           try {
-            const stat = fs.statSync(full)
-            if (!stat.isFile()) throw new Error('not a file')
-            const ext = (path.extname(id) || '').slice(1).toLowerCase()
-            const mime = MIME[ext] || 'application/octet-stream'
-            res.writeHead(200, {
-              'content-type': mime,
-              'content-length': String(stat.size),
-              'accept-ranges': 'bytes',
-              'cache-control': 'public, max-age=3600',
-            })
-            const stream = fs.createReadStream(full)
-            stream.on('error', () => res.destroy())
-            stream.pipe(res)
+            streamFile(full, res)
           } catch (error) {
             res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
             res.end('not found')

@@ -1,7 +1,7 @@
 {
   "name": "dsh-theme-tarkov",
   "description": "Escape from Tarkov themed plugin for the DeepSeek Harness Web UI: hero Beta-warning banner, background music dock, event sound effects (done / approval / error), an Altyn desktop pet, and a randomized running-status line, with a Settings > Plugins panel.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "packageManager": "pnpm@11.24.0",
   "type": "module",
   "main": "lib/index.js",
@@ -46,7 +46,7 @@
   "scripts": {
     "build": "node build.mjs",
     "check": "node --check lib/index.js && node --check lib/client.js",
-    "test": "node tests/notify.test.mjs",
+    "test": "node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/status-texts.test.mjs && node tests/client-smoke.mjs && node tests/narrow-screen.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {

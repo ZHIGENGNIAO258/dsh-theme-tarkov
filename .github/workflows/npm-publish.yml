@@ -30,7 +30,7 @@ jobs:
         run: pnpm run build
 
       - name: Test
-        run: node tests/notify.test.mjs && node tests/host-routes.test.mjs
+        run: pnpm test
 
       # Trusted publishing (OIDC): no token needed; provenance is generated
       # automatically for public repos/packages.

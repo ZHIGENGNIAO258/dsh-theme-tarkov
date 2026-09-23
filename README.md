@@ -22,6 +22,7 @@
 - **背景音乐**：右下角浮窗播放器，曲库由你自己提供（目录放置或面板上传）；多个标签页同时打开时，只有 leader 标签页在播放。
 - **Altyn 桌宠**：角落里的 Altyn 头盔小人——拖动换位置（自动记住）、**点击播放随机 Scav 语音**（包内 47 条）；把自备音频放进语音目录可加入随机池。
 - **状态行随机文案**：运行中的「深度求索中...」换成塔科夫风台词（如「正在寻找加密 U 盘...」），**每完成一步**（一次思考、一次工具调用）随机换一句。
+- **窄屏（手机竖屏，≤768px）适配**：桌宠自动隐藏**且不再下载皮肤图**；Beta 横幅字号降到 14 / 12px，图标与内边距同步收紧，**两段文本各自硬限两行**（`line-clamp`，文案再长也不会撑破布局）；≤380px 再降一档 13 / 11px。桌面视口（≥769px）完全不受影响。
 - **设置面板**：设置 → 插件 → 插件配置 →「塔科夫主题」，开启/关闭各功能、调整音量与横幅透明度、管理音乐曲库（添加 / 删除 / 禁用）。
 
 ## 安装
@@ -80,13 +81,15 @@ dsh plugin --profile web add link:<绝对路径>   # 把 <绝对路径> 换成�
 - 桌宠：`body` 直挂 + MutationObserver 守灵（dsh 首屏 React 会清 body 直挂节点）；指针交互三件套——`setPointerCapture`（绑自身，勿绑祖先）+ 6px 位移阈值区分点击/拖动 + `pointercancel`/`lostpointercapture` 清理；位置存 localStorage（恢复时钳位到当前视口，防大屏位置不可达）；点击 = `<350ms` 且未移动，随机语音经 Web Audio 解码播放（buffer 按 id 缓存，上限 12 条）；右键菜单行在 root 内，pointerdown 对菜单区域 return，否则 setPointerCapture 会把菜单点击截胡成戳。
 - 状态行：包装 `locale.translate`，只拦 `chat` / `chat.deepDiving` 一个键并返回池中随机句——**公开 locale API 覆盖不了内置文案**（同命名空间+同语言二次注册会抛 `locale namespace "chat" already has locale "zh"`），包装实例方法才能同时命中 ui-chat 自己的 `t` 和 slot 注入的 `t` 席位。换句由三路只读信号共同驱动、合并进同一个 `reshuffle` 标志：① `[role="status"][aria-live]` 新增节点（新一轮开始）；② 状态行的**兄弟节点**新增（消息流又渲染了一步，不依赖 host，旧 host 也能用）；③ 轮询 `/dsh-tarkov/status-poll`（host 的 `step/end` 计数，覆盖纯思考阶段）。全程不写 DOM，不碰旁边的耗时计时。locale 服务经 `ctx.inject(['locale'], …)` 作为**可选依赖**获取，缺失时静默不接管，不影响横幅/音乐/桌宠。
 - 设置卡片：注册 `settings.plugin.item`（key = host 命名空间），卡片外壳与字段样式复刻原生 PluginCard / fields 的 CSS token（`--dsw-alias-*`）。
+- 窄屏适配：断点沿用 BGM 浮窗已有的 `@media (max-width:768px)`。横幅的两行用 `display:-webkit-box` + `-webkit-line-clamp:2`（同时写标准 `line-clamp`）**硬保证**，而不是靠字号精算——实测 408px 视口下文本列只有约 256px，浏览器还可能做 5%~15% 的字体放大。桌宠是「CSS 隐藏」**加**「`matchMedia` 门控」（`syncPetFromPrefs()` 在窄屏直接 `destroyPetUi()` 不建 DOM）：只写 CSS 的话窄屏仍会下载 331KB 的 altyn.png，`resize` 还会把记忆坐标按窄视口重新钳位、回到大屏时位置被改小。
 
 ### 测试
 
 - `tests/notify.test.mjs`：事件分类、去重状态机、prefs 校验；
 - `tests/host-routes.test.mjs`：host 路由集成测试（隔离 DSH_HOME，不碰真实数据）——曲库合并、添加/删除、流式播放、桌宠语音库合并/播放/防穿越/皮肤回退、pet prefs 校验；
 - `tests/status-texts.test.mjs`：文案池解析（注释/空行/去重/上限）、client 包装（步内稳定、步进换句、兄弟节点换句、语言回落、透传、dispose 还原）、host 路由内容与 `step/end` 计数（子代理不计）；
-- `tests/client-smoke.mjs`：client 初始化与 apply() 冒烟。
+- `tests/client-smoke.mjs`：client 初始化与 apply() 冒烟；
+- `tests/narrow-screen.test.mjs`：窄屏断点与两行 clamp 的 CSS 断言，以及「窄屏不构建桌宠（不请求 altyn.png）、宽屏照旧」的门控断言。
 
 ## 开发
 
@@ -94,7 +97,7 @@ dsh plugin --profile web add link:<绝对路径>   # 把 <绝对路径> 换成�
 pnpm install          # 安装 esbuild / @deepseek-ai/schemastery（dev 依赖）
 pnpm run build        # 打包 src/index.js → lib/index.js（内联第三方依赖为自包含产物）
 node --check lib/index.js && node --check lib/client.js   # 语法检查
-node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/status-texts.test.mjs && node tests/client-smoke.mjs
+node tests/notify.test.mjs && node tests/host-routes.test.mjs && node tests/status-texts.test.mjs && node tests/client-smoke.mjs && node tests/narrow-screen.test.mjs
 ```
 
 本地开发直接用上面的「安装」link 方式（clone 后改代码，重启 dsh web 生效）。
@@ -116,6 +119,7 @@ npm version patch -m "release v%s" && git push --follow-tags
 ## 已知限制
 
 - 横幅锚定 hero 选项行的 hash 类名（`[class*='_heroWorkspaceRow']`），Web UI 结构重大重构时需随版本维护。
+- 320px 级超窄屏下，横幅两段文本仍会以省略号收尾——这是 `line-clamp` 的预期行为，「两行以内」优先于「完整显示」；340px 及以上实测都能完整排进两行。
 - 状态行文案依赖 DSH 内部的 `locale.translate` 实例方法、`[role="status"][aria-live]` 节点形状与 `step/end` 会话事件：拿不到这些形状时插件静默不接管（显示原生文案），DSH 大版本升级后需复核。
 
 ## 卸载

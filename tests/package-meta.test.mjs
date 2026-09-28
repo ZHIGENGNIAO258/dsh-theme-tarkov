@@ -46,3 +46,27 @@ test('the published file set ships the icon', () => {
   const files = manifest.files ?? []
   assert.ok(files.includes('assets'), 'package.json files must ship assets/ (where the icon lives)')
 })
+
+// ---- shipped media -----------------------------------------------------------
+
+test('the bundled background clip and its still are real, small media files', () => {
+  const clip = path.join(root, 'assets', 'bg', 'for-humanity.webm')
+  const still = path.join(root, 'assets', 'bg', 'poster.jpg')
+  assert.ok(fs.statSync(clip).isFile(), 'assets/bg/for-humanity.webm must ship')
+  assert.ok(fs.statSync(still).isFile(), 'assets/bg/poster.jpg must ship')
+  // EBML magic: a truncated or HTML-error-page copy fails here rather than in
+  // the browser, where a broken <video> silently shows a black rectangle.
+  assert.deepEqual([...fs.readFileSync(clip).subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3], 'the clip must be a WebM/Matroska file')
+  assert.deepEqual([...fs.readFileSync(still).subarray(0, 2)], [0xff, 0xd8], 'the still must be a JPEG')
+  // The whole point of transcoding the 12.4 MB master: keep the package small.
+  const clipSize = fs.statSync(clip).size
+  assert.ok(clipSize < 1024 * 1024, 'the 1080p centre crop should stay well under 1 MiB, got ' + clipSize)
+})
+
+test('the tool-failure chime ships as an m4a next to the other prompt sounds', () => {
+  const file = path.join(root, 'assets', 'sfx', 'tool_error.m4a')
+  assert.ok(fs.statSync(file).isFile(), 'assets/sfx/tool_error.m4a must ship')
+  // ISO-BMFF: bytes 4..8 spell "ftyp".
+  assert.equal(fs.readFileSync(file).subarray(4, 8).toString('latin1'), 'ftyp', 'the chime must be an MP4/M4A container')
+  assert.ok(fs.statSync(file).size < 64 * 1024, 'a 380 ms clip has no business being large')
+})

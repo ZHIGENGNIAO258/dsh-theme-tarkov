@@ -160,3 +160,77 @@ test('mergePrefs replaces music.disabled wholesale', () => {
   assert.deepEqual(merged.music.disabled, ['t2.wav', 't3.wav'])
   assert.deepEqual(mergePrefs(base, { music: { volume: 10 } }).music.disabled, ['t1.wav']) // untouched
 })
+
+// ---- tool failures (the 228 chime) ------------------------------------------
+
+const toolFail = (turn, code) => ({
+  type: 'tool/result',
+  data: { turn, step: 1, message: { isError: true, content: [] }, ...(code === undefined ? {} : { error: { name: 'x', code } }) },
+})
+
+test('tool/result isError → tool_error, a successful call → null', () => {
+  assert.equal(classifySessionEvent(toolFail(1, 'FS_NOT_OBSERVED')), 'tool_error')
+  assert.equal(classifySessionEvent(toolFail(1)), 'tool_error') // no code at all still rings
+  const ok = { type: 'tool/result', data: { turn: 1, step: 1, message: { isError: false, content: [] } } }
+  assert.equal(classifySessionEvent(ok), null)
+  // Malformed shapes stay silent rather than throwing.
+  assert.equal(classifySessionEvent({ type: 'tool/result', data: {} }), null)
+  assert.equal(classifySessionEvent({ type: 'tool/result' }), null)
+})
+
+test('a cancelled or never-started tool call is not a failure', () => {
+  for (const code of ['TOOL_ABORTED_BEFORE_DISPATCH', 'TOOL_NOT_STARTED', 'TOOL_OUTCOME_UNKNOWN']) {
+    assert.equal(classifySessionEvent(toolFail(1, code)), null, code)
+  }
+  assert.equal(classifySessionEvent(toolFail(1, 'FS_SANDBOX_DENIED')), 'tool_error')
+})
+
+test('tool failures collapse to one chime per turn', () => {
+  const state = createSfxState()
+  assert.equal(state.handle('s1', toolFail(1)), true)
+  assert.equal(state.handle('s1', toolFail(1)), false) // 13 failures in one turn = one chime
+  assert.equal(state.handle('s1', toolFail(1)), false)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
+  // The next turn is a new incident.
+  assert.equal(state.handle('s1', toolFail(2)), true)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
+  // Other sessions keep their own slot.
+  assert.equal(state.handle('s2', toolFail(1)), true)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's2' }])
+})
+
+test('a turn that fails after a tool failure still rings: two different incidents', () => {
+  const state = createSfxState()
+  assert.equal(state.handle('s1', toolFail(7)), true)
+  state.drain()
+  assert.equal(state.handle('s1', { type: 'turn/end', data: { turn: 7, reason: { kind: 'error' } } }), true)
+  assert.deepEqual(state.drain(), [{ type: 'error', sessionId: 's1' }])
+  // Collapsing a tool failure must not leak into the next turn's dedup slot.
+  assert.equal(state.handle('s1', toolFail(8)), true)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
+})
+
+test('bg prefs: off by default, sanitized, and tool_error has a slot', () => {
+  assert.equal(DEFAULT_PREFS.bg.enabled, false)
+  assert.equal(DEFAULT_PREFS.bg.opacity, 72)
+  assert.equal(DEFAULT_PREFS.bg.tone, 0)
+  assert.equal(DEFAULT_PREFS.sfx.sounds.tool_error, null)
+  const clamped = sanitizePrefs({ bg: { enabled: true, opacity: 500, tone: 500 } })
+  assert.equal(clamped.bg.enabled, true)
+  assert.equal(clamped.bg.opacity, DEFAULT_PREFS.bg.opacity) // out of range → default
+  assert.equal(clamped.bg.tone, DEFAULT_PREFS.bg.tone)
+  const kept = sanitizePrefs({ bg: { opacity: 45, tone: -40 } })
+  assert.equal(kept.bg.opacity, 45)
+  assert.equal(kept.bg.tone, -40)
+  // 1% is the new floor of the opacity slider and must survive; 0 is rejected.
+  assert.equal(sanitizePrefs({ bg: { opacity: 1 } }).bg.opacity, 1)
+  assert.equal(sanitizePrefs({ bg: { opacity: 0 } }).bg.opacity, DEFAULT_PREFS.bg.opacity)
+  // The old one-directional `dim` migrates to a darkening, and an explicit
+  // `tone` always wins over a stale `dim` left in prefs.json.
+  assert.equal(sanitizePrefs({ bg: { dim: 30 } }).bg.tone, -30)
+  assert.equal(sanitizePrefs({ bg: { dim: 30, tone: 20 } }).bg.tone, 20)
+  assert.equal(sanitizePrefs({ bg: { dim: 500 } }).bg.tone, 0)
+  const merged = mergePrefs(DEFAULT_PREFS, { bg: { enabled: true } })
+  assert.equal(merged.bg.enabled, true)
+  assert.equal(merged.bg.opacity, DEFAULT_PREFS.bg.opacity)
+})

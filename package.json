@@ -1,7 +1,7 @@
 {
   "name": "dsh-theme-tarkov",
-  "description": "Escape from Tarkov themed plugin for the DeepSeek Harness Web UI: hero Beta-warning banner, background music dock, event sound effects (done / approval / error), an Altyn desktop pet, and a randomized running-status line, with a Settings > Plugins panel.",
-  "version": "0.2.2",
+  "description": "Escape from Tarkov themed plugin for the DeepSeek Harness Web UI: hero Beta-warning banner, translucent looping video background, background music dock, event sound effects (done / approval / error / tool failure), an Altyn desktop pet, and a randomized running-status line, with a Settings > Plugins panel.",
+  "version": "0.3.0",
   "icon": "assets/icon.png",
   "packageManager": "pnpm@11.24.0",
   "type": "module",
@@ -30,6 +30,9 @@
     "tarkov",
     "audio",
     "bgm",
+    "background",
+    "video",
+    "wallpaper",
     "status-line",
     "web-ui"
   ],

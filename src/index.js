@@ -16,14 +16,21 @@ const ASSETS_SFX = path.join(__dirname, '..', 'assets', 'sfx')
 const ASSETS_MUSIC = path.join(__dirname, '..', 'assets', 'music')
 const ASSETS_PET = path.join(__dirname, '..', 'assets', 'pet')
 const ASSETS_VOICE = path.join(ASSETS_PET, 'voice')
+const ASSETS_BG = path.join(__dirname, '..', 'assets', 'bg')
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
 const DATA_DIR = path.join(DSH_HOME, 'dsh-tarkov')
 const SOUNDS_DIR = path.join(DATA_DIR, 'sounds')
 const MUSIC_DIR = path.join(DATA_DIR, 'music')
 const VOICE_DIR = path.join(DATA_DIR, 'voice')
 const PET_DIR = path.join(DATA_DIR, 'pet')
+const BG_DIR = path.join(DATA_DIR, 'bg')
 const PREFS_FILE = path.join(DATA_DIR, 'prefs.json')
 const PET_IMAGE_EXTS = ['png', 'gif', 'webp', 'jpg', 'jpeg']
+// Background layer: a muted looping video served straight from the package
+// (a 2048x788 = 2.6:1 VP9 crop of the 2048x2048 source, deliberately wider than
+// a browser content viewport so `object-fit: cover` trims the SIDES and never
+// the top/bottom) unless the user drops their own clip into ~/.dsh/dsh-tarkov/bg/.
+const BG_EXTS = ['webm', 'mp4']
 // Status-line copy pool: plain text files shipped inside the package, read per
 // request so editing them needs only a page refresh (no host restart). The
 // browser half cannot touch the filesystem, so it fetches them through
@@ -34,7 +41,7 @@ const STATUS_TEXT_MAX = 200
 const STATUS_POOL_MAX = 200
 const MAX_PENDING = 3
 const MAX_MUSIC_BYTES = 200 * 1024 * 1024
-const SFX_KINDS = ['done', 'approval', 'error']
+const SFX_KINDS = ['done', 'approval', 'error', 'tool_error']
 // Settings namespace: on the ≤0.1.6 line `settings.plugin.item` dispatched
 // exactly the registered namespaces, so this name had to equal the card key in
 // lib/client.js. From 0.1.7 the card is a `plugins.bundle.config` seat keyed by
@@ -56,6 +63,8 @@ const MIME = {
   webp: 'image/webp',
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
+  webm: 'video/webm',
+  mp4: 'video/mp4',
 }
 
 export const DEFAULT_PREFS = {
@@ -69,7 +78,7 @@ export const DEFAULT_PREFS = {
     enabled: true,
     volume: 70,
     // '' means the bundled seed sound; otherwise a { dataUrl, name } custom clip.
-    sounds: { done: null, approval: null, error: null },
+    sounds: { done: null, approval: null, error: null, tool_error: null },
   },
   music: {
     enabled: false,
@@ -86,6 +95,16 @@ export const DEFAULT_PREFS = {
     size: 160,
     volume: 70,
   },
+  // Translucent video background. Off by default: it is a taste call, and it
+  // repaints the whole shell. `opacity` is how opaque the app's own surfaces
+  // stay (100 = no video visible, 1 = almost fully see-through), `tone` is the
+  // signed scrim laid over the video: negative darkens, positive brightens, and
+  // 0 is neutral (the centre of the slider).
+  bg: {
+    enabled: false,
+    opacity: 72,
+    tone: 0,
+  },
 }
 
 /**
@@ -96,7 +115,7 @@ export const DEFAULT_PREFS = {
 export function mergePrefs(base, patch) {
   const out = JSON.parse(JSON.stringify(base))
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) return out
-  for (const group of ['banner', 'sfx', 'music', 'pet']) {
+  for (const group of ['banner', 'sfx', 'music', 'pet', 'bg']) {
     const p = patch[group]
     if (p === null || typeof p !== 'object' || Array.isArray(p)) continue
     out[group] = { ...out[group], ...p }
@@ -169,6 +188,15 @@ export function sanitizePrefs(raw) {
     out.pet.size = Math.round(num(p.size, 80, 240, out.pet.size))
     out.pet.volume = num(p.volume, 0, 100, out.pet.volume)
   }
+  const g = raw.bg
+  if (g && typeof g === 'object') {
+    if (typeof g.enabled === 'boolean') out.bg.enabled = g.enabled
+    out.bg.opacity = num(g.opacity, 1, 100, out.bg.opacity)
+    // `dim` was the one-directional scrim before `tone` replaced it: carry the
+    // user's choice over as a darkening instead of silently resetting it.
+    if (typeof g.tone === 'number') out.bg.tone = num(g.tone, -100, 100, out.bg.tone)
+    else if (typeof g.dim === 'number') out.bg.tone = num(-g.dim, -100, 100, out.bg.tone)
+  }
   return out
 }
 
@@ -239,6 +267,9 @@ function readStatusTexts() {
  * authoritative outcome (completed | blocked | aborted | error | max-tokens).
  * approval/asked marks the human-confirmation moment; ask_user_question is
  * picked up from its tool/call because it logs no dedicated event.
+ * tool/result carries `message.isError` — the same durable flag the harness's
+ * own session telemetry reads — for a failed tool call (file not observed,
+ * sandbox denied, provider error, timeout, ...).
  */
 export function classifySessionEvent(event) {
   if (event === null || typeof event !== 'object') return null
@@ -254,17 +285,30 @@ export function classifySessionEvent(event) {
     const name = event.data && event.data.name
     if (name === 'ask_user_question') return 'approval'
   }
+  if (event.type === 'tool/result') {
+    const data = event.data || {}
+    const message = data.message
+    if (message === null || typeof message !== 'object' || message.isError !== true) return null
+    // A call the user cancelled, or one that never started, is not a failure
+    // worth a sound: pressing Esc mid-turn must stay silent.
+    const code = String((data.error && data.error.code) || '')
+    if (code.startsWith('TOOL_ABORTED') || code === 'TOOL_NOT_STARTED' || code === 'TOOL_OUTCOME_UNKNOWN') return null
+    return 'tool_error'
+  }
   return null
 }
 
 /**
  * Per-session notification state: an approval chime is played once per pending
  * decision (approval/asked rings; approval/decided clears; a later blocked
- * turn/end stays silent because the ring already happened).
+ * turn/end stays silent because the ring already happened). A failed tool call
+ * is collapsed to one chime per turn, because a single turn can log a dozen
+ * failures in a row and chaining them would just be noise.
  */
 export function createSfxState() {
   const queue = []
   const awaitingApproval = new Map() // sessionId → true while a decided pair is open
+  const rungThisTurn = new Map() // `${sessionId}:${turn}` → true once tool_error rang
   return {
     queue,
     handle(sessionId, event) {
@@ -275,18 +319,29 @@ export function createSfxState() {
         return false
       }
       const type = classifySessionEvent(event)
+      const data = (event.data !== null && typeof event.data === 'object') ? event.data : {}
+      const turnKey = scope + ':' + String(data.turn === undefined ? '' : data.turn)
+      // The turn is over: forget its dedup slot so the map cannot grow.
+      if (event.type === 'turn/end') {
+        rungThisTurn.delete(turnKey)
+        if (rungThisTurn.size > 500) rungThisTurn.clear()
+      }
       if (!type) return false
       // Mark the pending decision for the approval/asked pair AND for an
       // ask_user_question tool call: both pause the turn for a human answer, and
       // a turn that ends blocked while that answer is still owed must not ring a
       // second time.
-      if (event.type === 'approval/asked' || (event.type === 'tool/call' && event.data && event.data.name === 'ask_user_question')) {
+      if (event.type === 'approval/asked' || (event.type === 'tool/call' && data.name === 'ask_user_question')) {
         awaitingApproval.set(scope, true)
       }
       // A turn/end blocked right after an unanswered approval/asked must not
       // double-ring the confirmation sound.
       if (event.type === 'turn/end' && type === 'approval' && awaitingApproval.get(scope) === true) {
         return false
+      }
+      if (type === 'tool_error') {
+        if (rungThisTurn.get(turnKey) === true) return false
+        rungThisTurn.set(turnKey, true)
       }
       if (queue.length >= MAX_PENDING) return false
       queue.push({ type, sessionId: scope })
@@ -352,18 +407,86 @@ function resolvePetImage() {
   return path.join(ASSETS_PET, 'altyn.png')
 }
 
+// Background clip: a user file in ~/.dsh/dsh-tarkov/bg/ (first by name) wins
+// over the bundled 1920x1080 VP9 clip; both are streamed straight from disk.
+function resolveBackground() {
+  try {
+    for (const name of fs.readdirSync(BG_DIR).sort()) {
+      const dot = name.lastIndexOf('.')
+      if (dot <= 0 || dot === name.length - 1) continue
+      if (!BG_EXTS.includes(name.slice(dot + 1).toLowerCase())) continue
+      const full = path.join(BG_DIR, name)
+      if (fs.statSync(full).isFile()) return full
+    }
+  } catch (error) {
+    /* no user dir yet */
+  }
+  return path.join(ASSETS_BG, 'for-humanity.webm')
+}
+
+/**
+ * Parse one HTTP byte-range header against a known size. Returns null when the
+ * header is absent, or is not a single byte range this server handles (the
+ * caller then sends the whole body), and 'invalid' when a well-formed range
+ * cannot be satisfied (the caller answers 416).
+ */
+export function parseRange(header, size) {
+  if (typeof header !== 'string' || header === '') return null
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
+  if (!match) return null
+  const rawStart = match[1]
+  const rawEnd = match[2]
+  if (rawStart === '' && rawEnd === '') return null
+  let start
+  let end
+  if (rawStart === '') {
+    const suffix = Number(rawEnd)
+    if (!Number.isFinite(suffix) || suffix <= 0) return 'invalid'
+    if (suffix >= size) return size === 0 ? 'invalid' : { start: 0, end: size - 1 }
+    start = size - suffix
+    end = size - 1
+  } else {
+    start = Number(rawStart)
+    end = rawEnd === '' ? size - 1 : Number(rawEnd)
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return 'invalid'
+    if (end > size - 1) end = size - 1
+  }
+  if (size === 0 || start >= size || start > end) return 'invalid'
+  return { start, end }
+}
+
 // Stream one file with a length header; caller guarantees the path is safe.
-function streamFile(full, res) {
+// A Range request (the browser asks for one whenever a <video> seeks or loops)
+// is answered with 206 + content-range: a player that receives a 200 for
+// `bytes=0-` re-downloads the whole clip on every loop.
+function streamFile(full, res, req) {
   const stat = fs.statSync(full)
   if (!stat.isFile()) throw new Error('not a file')
   const ext = (path.extname(full) || '').slice(1).toLowerCase()
   const mime = MIME[ext] || 'application/octet-stream'
-  res.writeHead(200, {
+  const range = req === undefined || req === null ? null : parseRange(req.headers && req.headers.range, stat.size)
+  const base = {
     'content-type': mime,
-    'content-length': String(stat.size),
     'accept-ranges': 'bytes',
     'cache-control': 'public, max-age=3600',
-  })
+  }
+  if (range === 'invalid') {
+    res.writeHead(416, { ...base, 'content-range': 'bytes */' + String(stat.size) })
+    res.end()
+    return
+  }
+  if (range !== null) {
+    res.writeHead(206, {
+      ...base,
+      'content-length': String(range.end - range.start + 1),
+      'content-range': 'bytes ' + String(range.start) + '-' + String(range.end) + '/' + String(stat.size),
+    })
+    const part = fs.createReadStream(full, { start: range.start, end: range.end })
+    part.on('error', () => res.destroy())
+    part.pipe(res)
+    return
+  }
+  res.writeHead(200, { ...base, 'content-length': String(stat.size) })
   const stream = fs.createReadStream(full)
   stream.on('error', () => res.destroy())
   stream.pipe(res)
@@ -738,6 +861,38 @@ export function apply(ctx) {
         handler: (req, res) => {
           try {
             streamFile(resolvePetImage(), res)
+          } catch (error) {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end('not found')
+          }
+        },
+      })
+    }
+
+    // ---- translucent video background ----
+    // Both routes (the clip and its poster still) live only while the feature
+    // is on, so switching it off in the card unmounts them exactly like the
+    // pet routes. The clip is served with real byte-range support: a <video>
+    // that loops re-requests `bytes=0-` and must not re-download the file.
+    if (prefs.bg.enabled) {
+      routes.push({
+        kind: 'exact',
+        path: '/dsh-tarkov/bg',
+        handler: (req, res) => {
+          try {
+            streamFile(resolveBackground(), res, req)
+          } catch (error) {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+            res.end('not found')
+          }
+        },
+      })
+      routes.push({
+        kind: 'exact',
+        path: '/dsh-tarkov/bg/poster',
+        handler: (req, res) => {
+          try {
+            streamFile(path.join(ASSETS_BG, 'poster.jpg'), res, req)
           } catch (error) {
             res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
             res.end('not found')

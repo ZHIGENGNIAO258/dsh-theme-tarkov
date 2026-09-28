@@ -48,10 +48,11 @@ const ctx = {
 }
 mod.apply(ctx)
 
-function makeReq(method, url, body) {
+function makeReq(method, url, body, headers) {
   const req = new EventEmitter()
   req.method = method
   req.url = url
+  req.headers = headers || {}
   if (body) queueMicrotask(() => req.emit('data', body))
   queueMicrotask(() => req.emit('end'))
   return req
@@ -71,11 +72,11 @@ function makeRes() {
   res.destroy = () => {}
   return res
 }
-function dispatch(method, url, body) {
+function dispatch(method, url, body, headers) {
   const pathname = url.split('?')[0]
   const route = registered.find((r) => r.path === pathname)
   assert.ok(route, 'route not registered: ' + pathname)
-  const req = makeReq(method, url, body)
+  const req = makeReq(method, url, body, headers)
   const res = makeRes()
   route.handler(req, res)
   return res
@@ -279,4 +280,88 @@ test('prompt sfx serves bundled clip and honours user override', async () => {
   assert.equal(res2.status, 200)
   assert.equal(res2.headers['content-type'], 'audio/wav')
   assert.equal(Buffer.concat(res2.chunks).toString('utf8'), 'RIFF....WAVE-custom-done')
+})
+
+// ---- translucent video background -------------------------------------------
+
+async function drain(res) {
+  const deadline = Date.now() + 5000
+  while (!res.done && Date.now() < deadline) await tick(25)
+  return Buffer.concat(res.chunks)
+}
+
+test('parseRange covers the range shapes a <video> sends', () => {
+  assert.deepEqual(mod.parseRange('bytes=0-99', 1000), { start: 0, end: 99 })
+  assert.deepEqual(mod.parseRange('bytes=100-', 1000), { start: 100, end: 999 })
+  assert.deepEqual(mod.parseRange('bytes=-100', 1000), { start: 900, end: 999 })
+  assert.deepEqual(mod.parseRange('bytes=990-5000', 1000), { start: 990, end: 999 })
+  assert.equal(mod.parseRange('bytes=1000-', 1000), 'invalid')
+  assert.equal(mod.parseRange('bytes=500-400', 1000), 'invalid')
+  assert.equal(mod.parseRange(undefined, 1000), null)
+  assert.equal(mod.parseRange('', 1000), null)
+  assert.equal(mod.parseRange('items=0-1', 1000), null) // not a byte range
+  assert.equal(mod.parseRange('bytes=0-1,5-6', 1000), null) // multi-range → whole body
+})
+
+test('background routes are mounted only while the feature is on', async () => {
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg'), undefined, 'off by default')
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { enabled: true } })))
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg'), 'clip route mounted')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/poster'), 'poster route mounted')
+})
+
+test('the bundled background clip is served with real byte ranges', async () => {
+  const part = dispatch('GET', '/dsh-tarkov/bg', undefined, { range: 'bytes=0-1023' })
+  const bytes = await drain(part)
+  assert.equal(part.status, 206)
+  assert.equal(part.headers['content-type'], 'video/webm')
+  assert.equal(part.headers['accept-ranges'], 'bytes')
+  assert.equal(part.headers['content-length'], '1024')
+  assert.match(part.headers['content-range'], /^bytes 0-1023\/\d+$/)
+  assert.equal(bytes.length, 1024)
+  const total = Number(part.headers['content-range'].split('/')[1])
+  assert.ok(total > 100000, 'the real 1080p clip should be shipped, got ' + total)
+  // Suffix range (players use it to read the tail / check the container).
+  const tail = dispatch('GET', '/dsh-tarkov/bg', undefined, { range: 'bytes=-256' })
+  await drain(tail)
+  assert.equal(tail.status, 206)
+  assert.equal(tail.headers['content-length'], '256')
+  assert.match(tail.headers['content-range'], new RegExp('^bytes ' + (total - 256) + '-' + (total - 1) + '/' + total + '$'))
+  // Unsatisfiable range → 416 advertising the size.
+  const bad = dispatch('GET', '/dsh-tarkov/bg', undefined, { range: 'bytes=99999999-' })
+  await drain(bad)
+  assert.equal(bad.status, 416)
+  assert.equal(bad.headers['content-range'], 'bytes */' + total)
+  // No Range header → the whole body, still advertised as range-capable.
+  const full = dispatch('GET', '/dsh-tarkov/bg', undefined, {})
+  const whole = await drain(full)
+  assert.equal(full.status, 200)
+  assert.equal(whole.length, total)
+})
+
+test('a user clip in the bg dir overrides the bundled one', async () => {
+  const dir = path.join(tmp, 'dsh-tarkov', 'bg')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'mine.mp4'), Buffer.from('user-clip-bytes'))
+  const res = dispatch('GET', '/dsh-tarkov/bg', undefined, {})
+  const bytes = await drain(res)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers['content-type'], 'video/mp4')
+  assert.equal(bytes.toString('utf8'), 'user-clip-bytes')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('the poster still is served as a JPEG', async () => {
+  const res = dispatch('GET', '/dsh-tarkov/bg/poster', undefined, {})
+  const bytes = await drain(res)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers['content-type'], 'image/jpeg')
+  assert.equal(bytes[0], 0xff)
+  assert.equal(bytes[1], 0xd8)
+})
+
+test('turning the background off unmounts its routes again', async () => {
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { enabled: false } })))
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg'), undefined, 'clip route must unmount')
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg/poster'), undefined, 'poster route must unmount')
 })

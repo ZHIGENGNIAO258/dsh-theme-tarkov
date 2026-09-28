@@ -51,6 +51,20 @@ test('blocked without a prior approval/asked still rings', () => {
   assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's1' }])
 })
 
+test('ask_user_question rings once: a blocked turn after it stays silent', () => {
+  const state = createSfxState()
+  const ask = { type: 'tool/call', data: { turn: 1, step: 1, callId: 'c', name: 'ask_user_question' } }
+  assert.equal(state.handle('s1', ask), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's1' }])
+  // The turn then closes blocked (answer still owed / the question was cancelled):
+  // the ring already happened for this pending decision.
+  assert.equal(state.handle('s1', turnEnd('blocked')), false)
+  assert.deepEqual(state.drain(), [])
+  // A different session is unaffected.
+  assert.equal(state.handle('s2', turnEnd('blocked')), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's2' }])
+})
+
 test('decided clears the pending flag; a later blocked rings again', () => {
   const state = createSfxState()
   state.handle('s1', { type: 'approval/asked', data: { id: 'a', toolName: 'bash' } })

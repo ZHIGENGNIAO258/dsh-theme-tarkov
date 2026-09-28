@@ -35,11 +35,13 @@ const STATUS_POOL_MAX = 200
 const MAX_PENDING = 3
 const MAX_MUSIC_BYTES = 200 * 1024 * 1024
 const SFX_KINDS = ['done', 'approval', 'error']
-// Browser card seat: settings.plugin.item dispatches exactly the registered
-// namespaces, so the namespace name must equal the card key in lib/client.js.
-// The schema stays deliberately shallow — the real configuration lives in the
-// plugin's prefs.json; a namespace with an empty section is enough to claim
-// the card. Keep it empty-object tolerant: no user-editable fields here.
+// Settings namespace: on the ≤0.1.6 line `settings.plugin.item` dispatched
+// exactly the registered namespaces, so this name had to equal the card key in
+// lib/client.js. From 0.1.7 the card is a `plugins.bundle.config` seat keyed by
+// the package name and no namespace registry exists; the name is still
+// registered on the older line, so it is kept for that path. The schema stays
+// deliberately shallow — the real configuration lives in the plugin's
+// prefs.json, and an empty section is enough to claim the card.
 const SETTINGS_NS = 'dsh-theme-tarkov'
 const TarkovSettingsSchema = z.object({})
 const MIME = {
@@ -274,7 +276,11 @@ export function createSfxState() {
       }
       const type = classifySessionEvent(event)
       if (!type) return false
-      if (event.type === 'approval/asked') {
+      // Mark the pending decision for the approval/asked pair AND for an
+      // ask_user_question tool call: both pause the turn for a human answer, and
+      // a turn that ends blocked while that answer is still owed must not ring a
+      // second time.
+      if (event.type === 'approval/asked' || (event.type === 'tool/call' && event.data && event.data.name === 'ask_user_question')) {
         awaitingApproval.set(scope, true)
       }
       // A turn/end blocked right after an unanswered approval/asked must not
@@ -416,12 +422,21 @@ export const inject = ['webServer', 'fs']
 export function apply(ctx) {
   ensurePetDirs()
 
-  // Claim the Settings → Plugins → 插件配置 card seat: the browser half
-  // registers settings.plugin.item keyed by this exact namespace and the tab
-  // only dispatches registered namespaces. Empty schema — the real
-  // configuration lives in this plugin's prefs.json and its own card.
+  // Settings-page policy. Up to 0.1.6 the browser half's card lived in the
+  // settings list keyed by this namespace, so the host had to register it; from
+  // 0.1.7 that namespace registry is gone (the service carries only an
+  // instance-level page policy) and the card ships from `plugins.bundle.config`
+  // instead. The schema is empty either way — the real configuration lives in
+  // this plugin's own prefs.json and its own card.
   ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.settings.register(SETTINGS_NS, TarkovSettingsSchema)
+    const settings = settingsCtx.settings
+    if (settings === null || typeof settings !== 'object') return
+    if (typeof settings.register === 'function') settings.register(SETTINGS_NS, TarkovSettingsSchema)
+    // `configure({ auto: false })` states that this plugin draws its own page,
+    // so the settings surface offers no auto-generated form for an empty schema.
+    if (typeof settings.configure === 'function') {
+      settingsCtx.effect(() => settings.configure({ auto: false }, ctx.fiber))
+    }
   })
 
   let prefs = loadPrefs()

@@ -1,6 +1,7 @@
 // Status-line copy tests: the host-side pool parser, the host step counter that
-// paces it, and the client-side translate() wrapper that swaps chat.deepDiving
-// for a random pool entry. Run: node tests/status-texts.test.mjs
+// paces it, and the client-side translate() wrapper that swaps the running-copy
+// keys (`chat.deepDiving`, `message.turnProcess.deepDivingFor`) for a random
+// pool entry. Run: node tests/status-texts.test.mjs
 import test from 'node:test'
 import assert from 'node:assert'
 import fs from 'node:fs'
@@ -230,19 +231,60 @@ test('client wrapper stays inert without a usable pool or locale service', async
   for (const dispose of missing.disposers) dispose()
 })
 
+test('the visible running copy is served from the pool and keeps the elapsed time', async () => {
+  const { locale, disposers } = await bootClient({ enabled: true, texts: { zh: ['甲', '乙'], en: ['A', 'B'] } })
+
+  // 0.1.7 renders this key (with a localized duration) where the user reads it.
+  const label = locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '12秒' })
+  assert.ok(label.endsWith('（用时12秒）'), 'the elapsed time must survive the swap, got ' + label)
+  const bare = label.slice(0, -'（用时12秒）'.length)
+  assert.ok(['甲', '乙'].includes(bare), 'the visible copy must come from the zh pool, got ' + label)
+
+  // The announcement of the same turn carries no duration and must agree.
+  assert.equal(locale.translate('chat', 'chat.deepDiving'), bare, 'announcement and visible label must agree')
+
+  for (const dispose of disposers) dispose()
+})
+
+test('a pool entry may place {duration} itself; an en locale appends a neutral suffix', async () => {
+  const zh = await bootClient({ enabled: true, texts: { zh: ['搜刮中 {duration}'], en: ['Looting ({duration})'] } })
+  assert.equal(zh.locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '9秒' }), '搜刮中 9秒')
+
+  zh.state.active = 'en'
+  assert.equal(zh.locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '9s' }), 'Looting (9s)')
+  for (const dispose of zh.disposers) dispose()
+
+  // No placeholder in the entry: the suffix is appended in the active language.
+  const en = await bootClient({ enabled: true, texts: { zh: [], en: ['Looting'] } })
+  en.state.active = 'en'
+  assert.equal(en.locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '9s' }), 'Looting (9s)')
+  assert.equal(en.locale.translate('chat', 'chat.deepDiving'), 'Looting', 'the announcement passes no duration')
+  for (const dispose of en.disposers) dispose()
+})
+
 // ---- host half ---------------------------------------------------------
 function bootHost() {
   const registered = []
   const listeners = {}
+  const configured = []
   const ctx = {
-    inject: (deps, fn) => { if (deps.includes('settings')) fn({ settings: { register() {} } }) },
+    // The 0.1.7 settings service carries only an instance-level page policy;
+    // `register` is the ≤0.1.6 namespace registry and is intentionally absent.
+    inject: (deps, fn) => {
+      if (!deps.includes('settings')) return
+      fn({
+        settings: { configure: (presentation, owner) => { configured.push({ presentation, owner }); return () => {} } },
+        effect: (fn2) => { fn2(); return () => {} },
+      })
+    },
     on: (name, fn) => { listeners[name] = fn },
     effect: (fn) => { fn(); return () => {} },
+    fiber: { id: 'plugin-fiber' },
     webServer: { register: (route) => { registered.push(route); return () => {} } },
     fs: { resolve: async (p) => p, listDir: async () => [], readBytes: async () => new Uint8Array(0) },
   }
   host.apply(ctx)
-  return { registered, listeners }
+  return { registered, listeners, configured }
 }
 
 function readRoute(route) {
@@ -279,4 +321,11 @@ test('host status-poll counts completed steps and skips subagent sessions', () =
   assert.equal(readRoute(route).seq, before + 2, 'every finished step advances the counter')
   listener({ id: 's2', header: { origin: 'subagent' } }, { type: 'step/end' })
   assert.equal(readRoute(route).seq, before + 2, 'subagent steps must not advance the counter')
+})
+
+test('host declares its own settings page on the 0.1.7 settings service', () => {
+  const { configured } = bootHost()
+  assert.equal(configured.length, 1, 'the 0.1.7 settings service must be configured exactly once')
+  assert.equal(configured[0].presentation.auto, false, 'this plugin draws its own page')
+  assert.ok(configured[0].owner, 'the page policy must be owned by the plugin fiber')
 })

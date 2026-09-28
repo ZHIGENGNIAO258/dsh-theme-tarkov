@@ -33,7 +33,17 @@ const ctx = {
   inject: (deps, fn) => { if (deps.includes('settings')) fn({ settings: { register() {} } }) },
   on: () => {},
   effect: (fn) => { fn(); return () => {} },
-  webServer: { register: (route) => { registered.push(route); return () => {} } },
+  webServer: {
+    register: (route) => {
+      registered.push(route)
+      // A real disposer: re-applying routes after a prefs write must actually
+      // unmount the routes whose feature gate just closed.
+      return () => {
+        const at = registered.indexOf(route)
+        if (at >= 0) registered.splice(at, 1)
+      }
+    },
+  },
   fs: { resolve: async (p) => p, listDir: async () => [], readBytes: async () => new Uint8Array(0) },
 }
 mod.apply(ctx)
@@ -226,6 +236,14 @@ test('pet image falls back to the bundled skin and honours user pet.png', async 
   while (!res2.done && Date.now() < deadline2) await tick(50)
   assert.equal(Buffer.concat(res2.chunks).toString('utf8'), 'user-pet-image-bytes')
   fs.unlinkSync(path.join(PET_DIR, 'pet.png'))
+})
+
+test('pet-gated routes unmount while the pet feature is off', async () => {
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { enabled: false } })))
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/pet/image'), undefined, 'the pet image route must unmount')
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/pet/audio'), undefined, 'the pet audio route must unmount')
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { enabled: true } })))
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/pet/image'), 'the pet image route must come back')
 })
 
 test('pet prefs sanitize: out-of-range falls back, valid values pass', async () => {

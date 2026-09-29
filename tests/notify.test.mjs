@@ -2,7 +2,7 @@
 // dedup state machine, and prefs sanitization. Run with: node tests/notify.test.mjs
 import test from 'node:test'
 import assert from 'node:assert'
-import { classifySessionEvent, createSfxState, sanitizePrefs, mergePrefs, DEFAULT_PREFS } from '../lib/index.js'
+import { classifySessionEvent, createSfxState, sanitizePrefs, mergePrefs, DEFAULT_PREFS, MAX_PENDING } from '../lib/index.js'
 
 const turnEnd = (kind) => ({ type: 'turn/end', seq: 1, time: 0, data: { turn: 1, reason: { kind } } })
 
@@ -77,12 +77,12 @@ test('decided clears the pending flag; a later blocked rings again', () => {
 test('queue is capped at MAX_PENDING, drain empties it', () => {
   const state = createSfxState()
   const session = (id) => ({ type: 'turn/end', data: { turn: id, reason: { kind: 'completed' } } })
-  assert.equal(state.handle('s1', session(1)), true)
-  assert.equal(state.handle('s2', session(2)), true)
-  assert.equal(state.handle('s3', session(3)), true)
-  assert.equal(state.handle('s4', session(4)), false) // over cap
+  for (let i = 1; i <= MAX_PENDING; i++) {
+    assert.equal(state.handle('s' + i, session(i)), true, 'event #' + i)
+  }
+  assert.equal(state.handle('s-over', session(0)), false) // over cap
   const first = state.drain()
-  assert.equal(first.length, 3)
+  assert.equal(first.length, MAX_PENDING)
   // Queue is empty again: one more event fits.
   assert.equal(state.handle('s5', session(5)), true)
   assert.deepEqual(state.drain(), [{ type: 'done', sessionId: 's5' }])
@@ -185,13 +185,17 @@ test('a cancelled or never-started tool call is not a failure', () => {
   assert.equal(classifySessionEvent(toolFail(1, 'FS_SANDBOX_DENIED')), 'tool_error')
 })
 
-test('tool failures collapse to one chime per turn', () => {
+test('every failed tool call rings (no per-turn / per-session collapse)', () => {
   const state = createSfxState()
   assert.equal(state.handle('s1', toolFail(1)), true)
-  assert.equal(state.handle('s1', toolFail(1)), false) // 13 failures in one turn = one chime
-  assert.equal(state.handle('s1', toolFail(1)), false)
-  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
-  // The next turn is a new incident.
+  assert.equal(state.handle('s1', toolFail(1)), true) // 13 failures in one turn = 13 chimes
+  assert.equal(state.handle('s1', toolFail(1)), true)
+  assert.deepEqual(state.drain(), [
+    { type: 'tool_error', sessionId: 's1' },
+    { type: 'tool_error', sessionId: 's1' },
+    { type: 'tool_error', sessionId: 's1' },
+  ])
+  // The next turn is a fresh incident too.
   assert.equal(state.handle('s1', toolFail(2)), true)
   assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
   // Other sessions keep their own slot.
@@ -205,9 +209,21 @@ test('a turn that fails after a tool failure still rings: two different incident
   state.drain()
   assert.equal(state.handle('s1', { type: 'turn/end', data: { turn: 7, reason: { kind: 'error' } } }), true)
   assert.deepEqual(state.drain(), [{ type: 'error', sessionId: 's1' }])
-  // Collapsing a tool failure must not leak into the next turn's dedup slot.
   assert.equal(state.handle('s1', toolFail(8)), true)
   assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
+})
+
+test('a burst of failures up to MAX_PENDING all queue; only overflow drops', () => {
+  const state = createSfxState()
+  for (let i = 0; i < MAX_PENDING; i++) {
+    assert.equal(state.handle('s1', toolFail(1)), true, 'failure #' + (i + 1))
+  }
+  assert.equal(state.handle('s1', toolFail(1)), false) // over the burst cap
+  const drained = state.drain()
+  assert.equal(drained.length, MAX_PENDING)
+  assert.ok(drained.every((item) => item.type === 'tool_error'))
+  // Drained queue accepts more again.
+  assert.equal(state.handle('s1', toolFail(1)), true)
 })
 
 test('bg prefs: off by default, sanitized, and tool_error has a slot', () => {

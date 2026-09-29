@@ -1,7 +1,7 @@
 // Status-line copy tests: the host-side pool parser, the host step counter that
 // paces it, and the client-side translate() wrapper that swaps the running-copy
-// keys (`chat.deepDiving`, `message.turnProcess.deepDivingFor`) for a random
-// pool entry. Run: node tests/status-texts.test.mjs
+// keys (`chat.deepDiving`, `chat.deepDivingFor`) for a random pool entry.
+// Run: node tests/status-texts.test.mjs
 import test from 'node:test'
 import assert from 'node:assert'
 import fs from 'node:fs'
@@ -234,8 +234,10 @@ test('client wrapper stays inert without a usable pool or locale service', async
 test('the visible running copy is served from the pool and keeps the elapsed time', async () => {
   const { locale, disposers } = await bootClient({ enabled: true, texts: { zh: ['甲', '乙'], en: ['A', 'B'] } })
 
-  // 0.1.7 renders this key (with a localized duration) where the user reads it.
-  const label = locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '12秒' })
+  // 0.2.0 renders this key (with a localized duration) where the user reads it;
+  // 0.1.7 used `message.turnProcess.deepDivingFor` and is covered by
+  // tests/status-keys.test.mjs.
+  const label = locale.translate('chat', 'chat.deepDivingFor', { duration: '12秒' })
   assert.ok(label.endsWith('（用时12秒）'), 'the elapsed time must survive the swap, got ' + label)
   const bare = label.slice(0, -'（用时12秒）'.length)
   assert.ok(['甲', '乙'].includes(bare), 'the visible copy must come from the zh pool, got ' + label)
@@ -248,16 +250,16 @@ test('the visible running copy is served from the pool and keeps the elapsed tim
 
 test('a pool entry may place {duration} itself; an en locale appends a neutral suffix', async () => {
   const zh = await bootClient({ enabled: true, texts: { zh: ['搜刮中 {duration}'], en: ['Looting ({duration})'] } })
-  assert.equal(zh.locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '9秒' }), '搜刮中 9秒')
+  assert.equal(zh.locale.translate('chat', 'chat.deepDivingFor', { duration: '9秒' }), '搜刮中 9秒')
 
   zh.state.active = 'en'
-  assert.equal(zh.locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '9s' }), 'Looting (9s)')
+  assert.equal(zh.locale.translate('chat', 'chat.deepDivingFor', { duration: '9s' }), 'Looting (9s)')
   for (const dispose of zh.disposers) dispose()
 
   // No placeholder in the entry: the suffix is appended in the active language.
   const en = await bootClient({ enabled: true, texts: { zh: [], en: ['Looting'] } })
   en.state.active = 'en'
-  assert.equal(en.locale.translate('chat', 'message.turnProcess.deepDivingFor', { duration: '9s' }), 'Looting (9s)')
+  assert.equal(en.locale.translate('chat', 'chat.deepDivingFor', { duration: '9s' }), 'Looting (9s)')
   assert.equal(en.locale.translate('chat', 'chat.deepDiving'), 'Looting', 'the announcement passes no duration')
   for (const dispose of en.disposers) dispose()
 })

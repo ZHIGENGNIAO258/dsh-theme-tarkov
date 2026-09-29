@@ -39,7 +39,12 @@ const ASSETS_STATUS = path.join(__dirname, '..', 'assets', 'status')
 const STATUS_LANGS = ['zh', 'en']
 const STATUS_TEXT_MAX = 200
 const STATUS_POOL_MAX = 200
-const MAX_PENDING = 3
+// Pending-chime queue cap. It is a burst guard for the host side only: the
+// browser half drains the queue on every poll (2 s), so the cap bites only when
+// more notifications pile up inside one poll window. Every failed tool call now
+// rings (see createSfxState), and a single turn can log a dozen failures, so the
+// cap must pass a realistic burst instead of silently eating it.
+export const MAX_PENDING = 32
 const MAX_MUSIC_BYTES = 200 * 1024 * 1024
 const SFX_KINDS = ['done', 'approval', 'error', 'tool_error']
 // Settings namespace: on the ≤0.1.6 line `settings.plugin.item` dispatched
@@ -302,13 +307,15 @@ export function classifySessionEvent(event) {
  * Per-session notification state: an approval chime is played once per pending
  * decision (approval/asked rings; approval/decided clears; a later blocked
  * turn/end stays silent because the ring already happened). A failed tool call
- * is collapsed to one chime per turn, because a single turn can log a dozen
- * failures in a row and chaining them would just be noise.
+ * rings EVERY time: the harness can log a dozen failures inside one turn, and
+ * collapsing them to a single chime — which is what this state machine used to
+ * do — read as "the tool-failure chime only rings once per conversation". The
+ * only limit left is the queue cap, a burst guard the browser half empties on
+ * every poll.
  */
 export function createSfxState() {
   const queue = []
   const awaitingApproval = new Map() // sessionId → true while a decided pair is open
-  const rungThisTurn = new Map() // `${sessionId}:${turn}` → true once tool_error rang
   return {
     queue,
     handle(sessionId, event) {
@@ -320,12 +327,6 @@ export function createSfxState() {
       }
       const type = classifySessionEvent(event)
       const data = (event.data !== null && typeof event.data === 'object') ? event.data : {}
-      const turnKey = scope + ':' + String(data.turn === undefined ? '' : data.turn)
-      // The turn is over: forget its dedup slot so the map cannot grow.
-      if (event.type === 'turn/end') {
-        rungThisTurn.delete(turnKey)
-        if (rungThisTurn.size > 500) rungThisTurn.clear()
-      }
       if (!type) return false
       // Mark the pending decision for the approval/asked pair AND for an
       // ask_user_question tool call: both pause the turn for a human answer, and
@@ -338,10 +339,6 @@ export function createSfxState() {
       // double-ring the confirmation sound.
       if (event.type === 'turn/end' && type === 'approval' && awaitingApproval.get(scope) === true) {
         return false
-      }
-      if (type === 'tool_error') {
-        if (rungThisTurn.get(turnKey) === true) return false
-        rungThisTurn.set(turnKey, true)
       }
       if (queue.length >= MAX_PENDING) return false
       queue.push({ type, sessionId: scope })

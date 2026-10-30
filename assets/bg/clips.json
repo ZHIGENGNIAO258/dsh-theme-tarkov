@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "clips": [
+    {
+      "id": "for-humanity",
+      "file": "for-humanity.webm",
+      "poster": "for-humanity.jpg",
+      "name": { "zh": "救世主", "en": "For Humanity" },
+      "scheme": "light",
+      "crop": { "x": 0, "y": 0.21875, "w": 1, "h": 0.5625 }
+    },
+    {
+      "id": "and-survived",
+      "file": "and-survived.webm",
+      "poster": "and-survived.jpg",
+      "name": { "zh": "幸存者", "en": "...and Survived" },
+      "scheme": "dark",
+      "crop": { "x": 0, "y": 0.21875, "w": 1, "h": 0.5625 }
+    },
+    {
+      "id": "did-not-escape",
+      "file": "did-not-escape.webm",
+      "poster": "did-not-escape.jpg",
+      "name": { "zh": "欠债人", "en": "You Did Not Escape From Yourself" },
+      "scheme": "dark",
+      "crop": { "x": 0, "y": 0.21875, "w": 1, "h": 0.5625 }
+    },
+    {
+      "id": "fall-in-darkness",
+      "file": "fall-in-darkness.webm",
+      "poster": "fall-in-darkness.jpg",
+      "name": { "zh": "堕入黑暗", "en": "To Fall in the Darkness" },
+      "scheme": "dark",
+      "crop": { "x": 0, "y": 0.21875, "w": 1, "h": 0.5625 }
+    }
+  ]
+}

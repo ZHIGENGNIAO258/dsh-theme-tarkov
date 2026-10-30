@@ -1,7 +1,7 @@
 {
   "name": "dsh-theme-tarkov",
-  "description": "Escape from Tarkov themed plugin for the DeepSeek Harness Web UI: hero Beta-warning banner, translucent looping video background, background music dock, event sound effects (done / approval / error / tool failure), an Altyn desktop pet, and a randomized running-status line, with a Settings > Plugins panel.",
-  "version": "0.3.1",
+  "description": "以《逃离塔科夫》为灵感的 DSH Web 界面主题：动态背景、提示音、背景音乐、桌宠与状态文案。",
+  "version": "0.4.0",
   "icon": "assets/icon.png",
   "packageManager": "pnpm@11.24.0",
   "type": "module",
@@ -9,6 +9,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov.git"
+  },
+  "homepage": "https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov#readme",
+  "bugs": {
+    "url": "https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov/issues"
   },
   "exports": {
     ".": "./lib/index.js",
@@ -33,6 +37,9 @@
     "background",
     "video",
     "wallpaper",
+    "background-library",
+    "dark-mode",
+    "framing",
     "status-line",
     "web-ui"
   ],

@@ -226,21 +226,34 @@ test('a burst of failures up to MAX_PENDING all queue; only overflow drops', () 
   assert.equal(state.handle('s1', toolFail(1)), true)
 })
 
-test('bg prefs: off by default, sanitized, and tool_error has a slot', () => {
-  assert.equal(DEFAULT_PREFS.bg.enabled, false)
-  assert.equal(DEFAULT_PREFS.bg.opacity, 72)
+test('shipped defaults: 救世主 background, 42/0, pet off, banner 0.85', () => {
+  assert.equal(DEFAULT_PREFS.banner.opacity, 0.85)
+  assert.equal(DEFAULT_PREFS.pet.enabled, false)
+  assert.equal(DEFAULT_PREFS.pet.size, 112)
+  assert.equal(DEFAULT_PREFS.bg.enabled, true)
+  assert.equal(DEFAULT_PREFS.bg.opacity, 42)
   assert.equal(DEFAULT_PREFS.bg.tone, 0)
+  assert.equal(DEFAULT_PREFS.bg.feather, 6)
+  assert.equal(DEFAULT_PREFS.bg.clip, 'for-humanity')
+  assert.equal(DEFAULT_PREFS.bg.crops['for-humanity'].y, 0.1449)
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['for-humanity'], { opacity: 50, tone: 0, feather: 3, theme: 'light' })
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['and-survived'], { opacity: 42, tone: 0, feather: 5, theme: 'dark' })
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['did-not-escape'], { opacity: 42, tone: 0, feather: 5, theme: 'dark' })
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['fall-in-darkness'], { opacity: 42, tone: 0, feather: 5, theme: 'dark' })
   assert.equal(DEFAULT_PREFS.sfx.sounds.tool_error, null)
-  const clamped = sanitizePrefs({ bg: { enabled: true, opacity: 500, tone: 500 } })
+  const clamped = sanitizePrefs({ bg: { enabled: true, opacity: 500, tone: 500, feather: 500 } })
   assert.equal(clamped.bg.enabled, true)
   assert.equal(clamped.bg.opacity, DEFAULT_PREFS.bg.opacity) // out of range → default
   assert.equal(clamped.bg.tone, DEFAULT_PREFS.bg.tone)
-  const kept = sanitizePrefs({ bg: { opacity: 45, tone: -40 } })
+  assert.equal(clamped.bg.feather, DEFAULT_PREFS.bg.feather)
+  const kept = sanitizePrefs({ bg: { opacity: 45, tone: -40, feather: 4.5 } })
   assert.equal(kept.bg.opacity, 45)
   assert.equal(kept.bg.tone, -40)
-  // 1% is the new floor of the opacity slider and must survive; 0 is rejected.
+  assert.equal(kept.bg.feather, 4.5)
+  assert.equal(sanitizePrefs({ bg: { feather: 0 } }).bg.feather, 0)
+  // 0 is a valid strength now: the tint is fully transparent.
+  assert.equal(sanitizePrefs({ bg: { opacity: 0 } }).bg.opacity, 0)
   assert.equal(sanitizePrefs({ bg: { opacity: 1 } }).bg.opacity, 1)
-  assert.equal(sanitizePrefs({ bg: { opacity: 0 } }).bg.opacity, DEFAULT_PREFS.bg.opacity)
   // The old one-directional `dim` migrates to a darkening, and an explicit
   // `tone` always wins over a stale `dim` left in prefs.json.
   assert.equal(sanitizePrefs({ bg: { dim: 30 } }).bg.tone, -30)
@@ -249,4 +262,48 @@ test('bg prefs: off by default, sanitized, and tool_error has a slot', () => {
   const merged = mergePrefs(DEFAULT_PREFS, { bg: { enabled: true } })
   assert.equal(merged.bg.enabled, true)
   assert.equal(merged.bg.opacity, DEFAULT_PREFS.bg.opacity)
+})
+
+test('bg clip and crop map: validated, normalized to 16:9, merged per clip', () => {
+  assert.equal(sanitizePrefs({ bg: { clip: 'user:我的片段.webm' } }).bg.clip, 'user:我的片段.webm')
+  assert.equal(sanitizePrefs({ bg: { clip: '../escape' } }).bg.clip, 'for-humanity')
+  assert.equal(sanitizePrefs({ bg: { clip: 'a/b' } }).bg.clip, 'for-humanity')
+  const crop = sanitizePrefs({ bg: { crops: { 'for-humanity': { x: 0.2, y: 0.1, w: 0.5, h: 0.2 } } } }).bg.crops['for-humanity']
+  assert.equal(crop.w, 0.5)
+  assert.ok(Math.abs(crop.h - (0.5 * 9) / 16) < 1e-3, 'height must be derived from the 16:9 width')
+  assert.ok(crop.x >= 0 && crop.x + crop.w <= 1 && crop.y >= 0 && crop.y + crop.h <= 1)
+  const merged = mergePrefs(
+    { bg: { crops: { a: { x: 0, y: 0.22, w: 1, h: 0.5625 } } } },
+    { bg: { crops: { b: { x: 0.1, y: 0.2, w: 0.5, h: 0.28125 } } } },
+  )
+  assert.ok(merged.bg.crops.a, 'patching one clip must keep the others')
+  assert.ok(merged.bg.crops.b)
+})
+
+test('bg per-background tuning: validated, kept independent, merged per clip and field', () => {
+  const prefs = sanitizePrefs({
+    bg: {
+      perClip: {
+        'for-humanity': { opacity: 48, tone: -35, feather: 4.5, theme: 'dark' },
+        'and-survived': { opacity: 101, tone: 200, feather: 99, theme: 'blue' },
+        '../escape': { opacity: 30 },
+        'back\\slash': { opacity: 30 },
+      },
+    },
+  })
+  assert.deepEqual(prefs.bg.perClip['for-humanity'], { opacity: 48, tone: -35, feather: 4.5, theme: 'dark' })
+  // Out-of-range values and unknown themes are dropped, not clamped, and the
+  // path-like key is rejected entirely.
+  assert.equal(prefs.bg.perClip['and-survived'], undefined)
+  assert.equal(prefs.bg.perClip['../escape'], undefined)
+  assert.equal(prefs.bg.perClip['back\\slash'], undefined)
+  // A record may legitimately carry only one field.
+  assert.deepEqual(sanitizePrefs({ bg: { perClip: { a: { theme: 'light' } } } }).bg.perClip.a, { theme: 'light' })
+
+  const merged = mergePrefs(
+    { bg: { perClip: { a: { opacity: 60, tone: -10, feather: 5, theme: 'dark' } } } },
+    { bg: { perClip: { b: { opacity: 30 }, a: { tone: 25, feather: 7.5 } } } },
+  )
+  assert.deepEqual(merged.bg.perClip.a, { opacity: 60, tone: 25, feather: 7.5, theme: 'dark' }, 'one field must not wipe the record')
+  assert.deepEqual(merged.bg.perClip.b, { opacity: 30 }, 'one clip must not wipe another')
 })

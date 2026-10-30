@@ -26,10 +26,10 @@ const PET_DIR = path.join(DATA_DIR, 'pet')
 const BG_DIR = path.join(DATA_DIR, 'bg')
 const PREFS_FILE = path.join(DATA_DIR, 'prefs.json')
 const PET_IMAGE_EXTS = ['png', 'gif', 'webp', 'jpg', 'jpeg']
-// Background layer: a muted looping video served straight from the package
-// (a 2048x788 = 2.6:1 VP9 crop of the 2048x2048 source, deliberately wider than
-// a browser content viewport so `object-fit: cover` trims the SIDES and never
-// the top/bottom) unless the user drops their own clip into ~/.dsh/dsh-tarkov/bg/.
+// Background layer: muted looping square videos served straight from the
+// package (clips.json) or from ~/.dsh/dsh-tarkov/bg/. The browser crops each
+// clip to its per-clip 16:9 framing with object-view-box, then covers the
+// viewport; the host only resolves ids and streams the files.
 const BG_EXTS = ['webm', 'mp4']
 // Status-line copy pool: plain text files shipped inside the package, read per
 // request so editing them needs only a page refresh (no host restart). The
@@ -77,7 +77,7 @@ export const DEFAULT_PREFS = {
     enabled: true,
     text1: '注意！这是“Deepseek Harness”的Beta测试版本。',
     text2: 'Beta测试版本不代表本产品的最终质量。感谢您的理解和支持，祝你好运！',
-    opacity: 0.55,
+    opacity: 0.85,
   },
   sfx: {
     enabled: true,
@@ -96,20 +96,120 @@ export const DEFAULT_PREFS = {
     removed: [],
   },
   pet: {
-    enabled: true,
-    size: 160,
+    enabled: false,
+    size: 112,
     volume: 70,
   },
-  // Translucent video background. Off by default: it is a taste call, and it
-  // repaints the whole shell. `opacity` is how opaque the app's own surfaces
-  // stay (100 = no video visible, 1 = almost fully see-through), `tone` is the
-  // signed scrim laid over the video: negative darkens, positive brightens, and
-  // 0 is neutral (the centre of the slider).
+  // Translucent video background. On by default: the shipped look is 救世主 at
+  // a moderate veil. `opacity` is the alpha of the conversation-width plateau;
+  // the tint fades to half that value at the viewport edges, so the sidebar
+  // still shows the clip. `tone` darkens/brightens the tint only. `clip` is a
+  // manifest id, 'auto' (first local file, else the first bundled clip), or
+  // 'user:<file name>'; it is pinned to 'for-humanity' so a user's local files
+  // cannot hijack the out-of-box look. `crops` holds one normalized 16:9
+  // framing rect per clip and `perClip` the per-background opacity/tone/feather/
+  // theme record. The top-level values remain the fallback for clips without a
+  // record; `feather` is the fade width in vw (0..12).
   bg: {
-    enabled: false,
-    opacity: 72,
+    enabled: true,
+    opacity: 42,
     tone: 0,
+    feather: 6,
+    clip: 'for-humanity',
+    crops: {
+      'for-humanity': { x: 0, y: 0.1449, w: 1, h: 0.5625 },
+    },
+    perClip: {
+      'for-humanity': { opacity: 50, tone: 0, feather: 3, theme: 'light' },
+      'and-survived': { opacity: 42, tone: 0, feather: 5, theme: 'dark' },
+      'did-not-escape': { opacity: 42, tone: 0, feather: 5, theme: 'dark' },
+      'fall-in-darkness': { opacity: 42, tone: 0, feather: 5, theme: 'dark' },
+    },
   },
+}
+
+/**
+ * Normalized 16:9 framing rect at the centre of a square source. Crops are
+ * stored relative to the source (0..1), not in pixels, so the same value works
+ * for every render size. `h = w * 9 / 16` is enforced.
+ */
+export const BG_DEFAULT_CROP = { x: 0, y: (1 - 9 / 16) / 2, w: 1, h: 9 / 16 }
+const BG_MIN_CROP_W = 0.35
+const BG_MANIFEST_FILE = path.join(ASSETS_BG, 'clips.json')
+const BG_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/
+
+/**
+ * Clamp one untrusted crop to a legal 16:9 rect. A missing/invalid value falls
+ * back to {@link BG_DEFAULT_CROP}; a legal width is clamped so the rect still
+ * fits inside the source. Pure so tests can pin the geometry.
+ */
+export function normalizeCrop(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { ...BG_DEFAULT_CROP }
+  const n = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback)
+  let w = n(raw.w, BG_DEFAULT_CROP.w)
+  w = Math.max(BG_MIN_CROP_W, Math.min(1, w))
+  const h = (w * 9) / 16
+  let x = n(raw.x, BG_DEFAULT_CROP.x)
+  let y = n(raw.y, BG_DEFAULT_CROP.y)
+  x = Math.max(0, Math.min(1 - w, x))
+  y = Math.max(0, Math.min(1 - h, y))
+  return {
+    x: Math.round(x * 10000) / 10000,
+    y: Math.round(y * 10000) / 10000,
+    w: Math.round(w * 10000) / 10000,
+    h: Math.round(h * 10000) / 10000,
+  }
+}
+
+/** Validate the per-clip crop map. Keys are clip ids or `user:<file>`. */
+export function sanitizeCrops(raw) {
+  const out = {}
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return out
+  let count = 0
+  for (const [key, value] of Object.entries(raw)) {
+    if (count >= 50) break
+    if (typeof key !== 'string' || key.length === 0 || key.length > 200) continue
+    if (key.includes('/') || key.includes('\\') || key.includes('..')) continue
+    out[key] = normalizeCrop(value)
+    count += 1
+  }
+  return out
+}
+
+/**
+ * Validate the per-background tuning map. A record may carry any subset of
+ * `opacity` / `tone` / `theme`; missing fields fall back on the top-level
+ * defaults in the client, which keeps older prefs working. Values outside
+ * their range are dropped rather than clamped, so a corrupt entry never pins
+ * the UI to an accidental extreme.
+ */
+export function sanitizePerClip(raw) {
+  const out = {}
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return out
+  let count = 0
+  for (const [key, value] of Object.entries(raw)) {
+    if (count >= 100) break
+    if (typeof key !== 'string' || key.length === 0 || key.length > 200) continue
+    if (key.includes('/') || key.includes('\\') || key.includes('..')) continue
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) continue
+    const rec = {}
+    if (typeof value.opacity === 'number' && Number.isFinite(value.opacity) && value.opacity >= 0 && value.opacity <= 100) {
+      rec.opacity = Math.round(value.opacity)
+    }
+    if (typeof value.tone === 'number' && Number.isFinite(value.tone) && value.tone >= -100 && value.tone <= 100) {
+      rec.tone = Math.round(value.tone)
+    }
+    if (typeof value.feather === 'number' && Number.isFinite(value.feather) && value.feather >= 0 && value.feather <= 12) {
+      rec.feather = Math.round(value.feather * 10) / 10
+    }
+    if (value.theme === 'light' || value.theme === 'dark' || value.theme === 'system') {
+      rec.theme = value.theme
+    }
+    if (Object.keys(rec).length === 0) continue
+    out[key] = rec
+    count += 1
+  }
+  return out
 }
 
 /**
@@ -123,9 +223,29 @@ export function mergePrefs(base, patch) {
   for (const group of ['banner', 'sfx', 'music', 'pet', 'bg']) {
     const p = patch[group]
     if (p === null || typeof p !== 'object' || Array.isArray(p)) continue
+    const baseCrops = group === 'bg' && out[group].crops && typeof out[group].crops === 'object' ? out[group].crops : null
+    const basePerClip = group === 'bg' && out[group].perClip && typeof out[group].perClip === 'object' ? out[group].perClip : null
     out[group] = { ...out[group], ...p }
     if (group === 'sfx' && p.sounds && typeof p.sounds === 'object') {
       out.sfx.sounds = { ...out.sfx.sounds, ...p.sounds }
+    }
+    // Crops are keyed by clip id: a patch for one clip must not drop the rest.
+    if (group === 'bg' && p.crops && typeof p.crops === 'object' && !Array.isArray(p.crops)) {
+      out.bg.crops = { ...(baseCrops || {}), ...p.crops }
+    }
+    // Per-background tuning merges per key too, so writing one clip's record
+    // (or one field of it) never discards another background's settings.
+    if (group === 'bg' && p.perClip && typeof p.perClip === 'object' && !Array.isArray(p.perClip)) {
+      const merged = { ...(basePerClip || {}) }
+      for (const [key, value] of Object.entries(p.perClip)) {
+        const prev = merged[key] && typeof merged[key] === 'object' && !Array.isArray(merged[key]) ? merged[key] : {}
+        if (value === null) {
+          delete merged[key]
+        } else if (value && typeof value === 'object' && !Array.isArray(value)) {
+          merged[key] = { ...prev, ...value }
+        }
+      }
+      out.bg.perClip = merged
     }
   }
   return out
@@ -196,11 +316,17 @@ export function sanitizePrefs(raw) {
   const g = raw.bg
   if (g && typeof g === 'object') {
     if (typeof g.enabled === 'boolean') out.bg.enabled = g.enabled
-    out.bg.opacity = num(g.opacity, 1, 100, out.bg.opacity)
+    out.bg.opacity = num(g.opacity, 0, 100, out.bg.opacity)
     // `dim` was the one-directional scrim before `tone` replaced it: carry the
     // user's choice over as a darkening instead of silently resetting it.
     if (typeof g.tone === 'number') out.bg.tone = num(g.tone, -100, 100, out.bg.tone)
     else if (typeof g.dim === 'number') out.bg.tone = num(-g.dim, -100, 100, out.bg.tone)
+    out.bg.feather = Math.round(num(g.feather, 0, 12, out.bg.feather) * 10) / 10
+    if (typeof g.clip === 'string' && g.clip.length > 0 && g.clip.length <= 200 && !/[\\/]/.test(g.clip) && !g.clip.includes('..')) {
+      out.bg.clip = g.clip
+    }
+    out.bg.crops = sanitizeCrops(g.crops)
+    out.bg.perClip = sanitizePerClip(g.perClip)
   }
   return out
 }
@@ -404,21 +530,115 @@ function resolvePetImage() {
   return path.join(ASSETS_PET, 'altyn.png')
 }
 
-// Background clip: a user file in ~/.dsh/dsh-tarkov/bg/ (first by name) wins
-// over the bundled 1920x1080 VP9 clip; both are streamed straight from disk.
-function resolveBackground() {
+// Background library: bundled clips are described by assets/bg/clips.json and
+// served straight from the package; user clips in ~/.dsh/dsh-tarkov/bg/ are
+// listed alongside them. A clip id is either a manifest id or `user:<file>`.
+function isSafeBgName(name) {
+  return typeof name === 'string' && name.length > 0 && name.length <= 200 && !/[\\/]/.test(name) && !name.includes('..')
+}
+
+/** Read and validate the bundled clip manifest. Always returns at least one clip. */
+function loadBgManifest() {
+  let parsed = null
   try {
-    for (const name of fs.readdirSync(BG_DIR).sort()) {
-      const dot = name.lastIndexOf('.')
-      if (dot <= 0 || dot === name.length - 1) continue
-      if (!BG_EXTS.includes(name.slice(dot + 1).toLowerCase())) continue
-      const full = path.join(BG_DIR, name)
-      if (fs.statSync(full).isFile()) return full
-    }
+    parsed = JSON.parse(fs.readFileSync(BG_MANIFEST_FILE, 'utf8'))
   } catch (error) {
-    /* no user dir yet */
+    parsed = null
   }
-  return path.join(ASSETS_BG, 'for-humanity.webm')
+  const list = []
+  const seen = new Set()
+  const entries = parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.clips) ? parsed.clips : []
+  for (const entry of entries) {
+    if (entry === null || typeof entry !== 'object') continue
+    if (typeof entry.id !== 'string' || !BG_ID_RE.test(entry.id) || seen.has(entry.id)) continue
+    if (!isSafeBgName(entry.file)) continue
+    if (!BG_EXTS.includes((path.extname(entry.file).slice(1) || '').toLowerCase())) continue
+    if (!fs.existsSync(path.join(ASSETS_BG, entry.file))) continue
+    const poster = isSafeBgName(entry.poster) && fs.existsSync(path.join(ASSETS_BG, entry.poster)) ? entry.poster : null
+    const names = entry.name !== null && typeof entry.name === 'object' ? entry.name : {}
+    list.push({
+      id: entry.id,
+      file: entry.file,
+      poster,
+      name: {
+        zh: typeof names.zh === 'string' && names.zh ? names.zh : entry.id,
+        en: typeof names.en === 'string' && names.en ? names.en : entry.id,
+      },
+      scheme: entry.scheme === 'light' ? 'light' : 'dark',
+      crop: normalizeCrop(entry.crop),
+    })
+    seen.add(entry.id)
+  }
+  if (list.length === 0) {
+    // A broken/absent manifest must not kill the feature: keep the old clip.
+    list.push({
+      id: 'for-humanity',
+      file: 'for-humanity.webm',
+      poster: fs.existsSync(path.join(ASSETS_BG, 'for-humanity.jpg')) ? 'for-humanity.jpg' : null,
+      name: { zh: '救世主', en: 'For Humanity' },
+      scheme: 'light',
+      crop: { ...BG_DEFAULT_CROP },
+    })
+  }
+  return list
+}
+
+/** User clips, first by filename; ids are `user:<name>` so they never collide. */
+function listUserBgFiles() {
+  let names = []
+  try {
+    names = fs.readdirSync(BG_DIR)
+  } catch (error) {
+    return []
+  }
+  names.sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  const out = []
+  for (const name of names) {
+    if (!isSafeBgName(name)) continue
+    const dot = name.lastIndexOf('.')
+    if (dot <= 0 || dot === name.length - 1) continue
+    if (!BG_EXTS.includes(name.slice(dot + 1).toLowerCase())) continue
+    const full = path.join(BG_DIR, name)
+    try {
+      if (!fs.statSync(full).isFile()) continue
+    } catch (error) {
+      continue
+    }
+    out.push({ id: 'user:' + name, name: name.slice(0, dot), builtin: false, scheme: null, poster: null, file: name })
+  }
+  return out
+}
+
+/** Resolve any accepted clip reference to a concrete id. */
+function resolveBgClipId(clip) {
+  const manifest = loadBgManifest()
+  const users = listUserBgFiles()
+  if (typeof clip === 'string') {
+    if (clip.startsWith('user:') && users.some((entry) => entry.id === clip)) return clip
+    if (BG_ID_RE.test(clip) && manifest.some((entry) => entry.id === clip)) return clip
+  }
+  if (users.length > 0) return users[0].id
+  return manifest[0].id
+}
+
+/** Absolute path for a clip, or null when a `user:` reference no longer exists. */
+function resolveBgClipPath(clip) {
+  const id = resolveBgClipId(clip)
+  if (id.startsWith('user:')) {
+    const name = id.slice('user:'.length)
+    if (!isSafeBgName(name)) return null
+    return path.join(BG_DIR, name)
+  }
+  const entry = loadBgManifest().find((item) => item.id === id)
+  return entry === undefined ? null : path.join(ASSETS_BG, entry.file)
+}
+
+/** Absolute poster path, or null for user clips without one. */
+function resolveBgPosterPath(clip) {
+  const id = resolveBgClipId(clip)
+  if (id.startsWith('user:')) return null
+  const entry = loadBgManifest().find((item) => item.id === id)
+  return entry === undefined || entry.poster === null ? null : path.join(ASSETS_BG, entry.poster)
 }
 
 /**
@@ -561,6 +781,39 @@ export function apply(ctx) {
 
   let prefs = loadPrefs()
   const state = createSfxState()
+
+  /** Per-clip framing rect: the user's saved one wins, else the manifest default. */
+  function resolveBgCrop(clip) {
+    const id = resolveBgClipId(clip)
+    const stored = prefs.bg.crops[id]
+    if (stored !== undefined) return normalizeCrop(stored)
+    const entry = loadBgManifest().find((item) => item.id === id)
+    return entry === undefined ? { ...BG_DEFAULT_CROP } : normalizeCrop(entry.crop)
+  }
+
+  /** Everything the settings card needs to draw the gallery. */
+  function listBackgrounds() {
+    const builtins = loadBgManifest().map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      scheme: entry.scheme,
+      builtin: true,
+      file: entry.file,
+      poster: entry.poster === null ? null : '/dsh-tarkov/bg/poster?id=' + encodeURIComponent(entry.id),
+      crop: resolveBgCrop(entry.id),
+    }))
+    const users = listUserBgFiles().map((entry) => ({
+      ...entry,
+      poster: null,
+      crop: resolveBgCrop(entry.id),
+    }))
+    return {
+      clips: [...builtins, ...users],
+      selected: resolveBgClipId(prefs.bg.clip),
+      defaultCrop: { ...BG_DEFAULT_CROP },
+      dir: BG_DIR,
+    }
+  }
 
   // Post-commit session-log firehose. Subagent sessions must not ring; the
   // listener stays mounted but short-circuits while the sfx feature is off
@@ -866,36 +1119,79 @@ export function apply(ctx) {
       })
     }
 
-    // ---- translucent video background ----
-    // Both routes (the clip and its poster still) live only while the feature
-    // is on, so switching it off in the card unmounts them exactly like the
-    // pet routes. The clip is served with real byte-range support: a <video>
-    // that loops re-requests `bytes=0-` and must not re-download the file.
+    // ---- video background library ----
+    // The list, posters and preview stay mounted while the feature is off: the
+    // settings card must be able to browse/frame clips before enabling them.
+    // The live clip route is gated, so "off" really means no video is fetched.
+    // Both clip routes stream with byte-range support: a looping <video>
+    // re-requests `bytes=0-` and must not re-download the file.
+    routes.push({
+      kind: 'exact',
+      path: '/dsh-tarkov/bg/list',
+      handler: (req, res) => {
+        sendJson(res, listBackgrounds())
+      },
+    })
+    routes.push({
+      kind: 'exact',
+      path: '/dsh-tarkov/bg/poster',
+      handler: (req, res) => {
+        let id = ''
+        try {
+          id = new URL(req.url, 'http://dsh.local').searchParams.get('id') || prefs.bg.clip
+        } catch (error) {
+          id = prefs.bg.clip
+        }
+        try {
+          const full = resolveBgPosterPath(id)
+          if (full === null) throw new Error('no poster')
+          streamFile(full, res, req)
+        } catch (error) {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('not found')
+        }
+      },
+    })
+    routes.push({
+      kind: 'exact',
+      path: '/dsh-tarkov/bg/preview',
+      handler: (req, res) => {
+        let id = ''
+        try {
+          id = new URL(req.url, 'http://dsh.local').searchParams.get('id') || prefs.bg.clip
+        } catch (error) {
+          id = prefs.bg.clip
+        }
+        try {
+          const full = resolveBgClipPath(id)
+          if (full === null) throw new Error('no clip')
+          streamFile(full, res, req)
+        } catch (error) {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('not found')
+        }
+      },
+    })
     if (prefs.bg.enabled) {
-      routes.push({
-        kind: 'exact',
-        path: '/dsh-tarkov/bg',
-        handler: (req, res) => {
-          try {
-            streamFile(resolveBackground(), res, req)
-          } catch (error) {
-            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('not found')
-          }
-        },
-      })
-      routes.push({
-        kind: 'exact',
-        path: '/dsh-tarkov/bg/poster',
-        handler: (req, res) => {
-          try {
-            streamFile(path.join(ASSETS_BG, 'poster.jpg'), res, req)
-          } catch (error) {
-            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
-            res.end('not found')
-          }
-        },
-      })
+      const streamClip = (req, res) => {
+        let id = ''
+        try {
+          id = new URL(req.url, 'http://dsh.local').searchParams.get('id') || prefs.bg.clip
+        } catch (error) {
+          id = prefs.bg.clip
+        }
+        try {
+          const full = resolveBgClipPath(id)
+          if (full === null) throw new Error('no clip')
+          streamFile(full, res, req)
+        } catch (error) {
+          res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('not found')
+        }
+      }
+      routes.push({ kind: 'exact', path: '/dsh-tarkov/bg/clip', handler: streamClip })
+      // Compatibility with 0.3 clients/bookmarks: the selected clip.
+      routes.push({ kind: 'exact', path: '/dsh-tarkov/bg', handler: streamClip })
     }
 
     if (prefs.music.enabled) {
@@ -929,8 +1225,16 @@ export function apply(ctx) {
   }
 
   let disposeRoutes = null
+  let appliedRouteKey = null
   function applyRoutes() {
     buildRoutes()
+    // Crop/selection writes do not change the route set; re-registering them
+    // would briefly unmount the always-on preview/list routes while the
+    // framing editor is streaming. Handlers close over the live `prefs`, so an
+    // unchanged path set can keep the existing registrations.
+    const key = routes.map((route) => route.path).join('|')
+    if (key === appliedRouteKey) return
+    appliedRouteKey = key
     disposeRoutes?.()
     const disposers = routes.map((route) => ctx.webServer.register(route))
     disposeRoutes = () => {
@@ -943,6 +1247,7 @@ export function apply(ctx) {
     return () => {
       disposeRoutes?.()
       disposeRoutes = null
+      appliedRouteKey = null
     }
   }, 'dsh-theme-tarkov: routes')
 }

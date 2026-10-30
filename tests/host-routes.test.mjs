@@ -183,6 +183,8 @@ const BUNDLED_ID = bundledVoiceNames[0]
 assert.ok(BUNDLED_ID, 'assets/pet/voice must ship at least one audio file')
 
 test('pet voice list merges bundled voices with user clips', async () => {
+  // The shipped default keeps the pet off; these route tests exercise it on.
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { enabled: true } })))
   fs.mkdirSync(VOICE_DIR, { recursive: true })
   fs.writeFileSync(path.join(VOICE_DIR, 'my-line.wav'), Buffer.from('RIFF....WAVE-user-voice'))
   const { status, body } = await jsonRoute('GET', '/dsh-tarkov/pet/voice')
@@ -251,9 +253,9 @@ test('pet prefs sanitize: out-of-range falls back, valid values pass', async () 
   // Out-of-range values fall back to defaults (num semantics: invalid → default).
   const bad = await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { size: 9999, volume: -5, enabled: 'yes' } })))
   assert.equal(bad.status, 200)
-  assert.equal(bad.body.prefs.pet.size, 160)
+  assert.equal(bad.body.prefs.pet.size, 112)
   assert.equal(bad.body.prefs.pet.volume, 70)
-  assert.equal(bad.body.prefs.pet.enabled, true)
+  assert.equal(bad.body.prefs.pet.enabled, false)
   // Valid values pass through.
   const ok = await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ pet: { size: 200, volume: 55, enabled: false } })))
   assert.equal(ok.body.prefs.pet.size, 200)
@@ -303,15 +305,36 @@ test('parseRange covers the range shapes a <video> sends', () => {
   assert.equal(mod.parseRange('bytes=0-1,5-6', 1000), null) // multi-range → whole body
 })
 
-test('background routes are mounted only while the feature is on', async () => {
-  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg'), undefined, 'off by default')
+test('background library routes stay mounted; the live clip is gated', async () => {
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/list'), 'list route must always be mounted')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/poster'), 'poster route must always be mounted')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/preview'), 'preview route must always be mounted')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/clip'), 'clip route mounted by default')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg'), 'compat route mounted by default')
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { enabled: false } })))
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg/clip'), undefined, 'disabled drops the clip route')
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg'), undefined, 'disabled drops the compat route')
   await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { enabled: true } })))
-  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg'), 'clip route mounted')
-  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/poster'), 'poster route mounted')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/clip'), 'clip route mounted again')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg'), 'compat route mounted again')
 })
 
-test('the bundled background clip is served with real byte ranges', async () => {
-  const part = dispatch('GET', '/dsh-tarkov/bg', undefined, { range: 'bytes=0-1023' })
+test('bg list exposes the four bundled clips and a default 16:9 crop', async () => {
+  const { status, body } = await jsonRoute('GET', '/dsh-tarkov/bg/list')
+  assert.equal(status, 200)
+  const builtins = body.clips.filter((clip) => clip.builtin === true)
+  assert.equal(builtins.length, 4)
+  assert.ok(builtins.some((clip) => clip.id === 'for-humanity' && clip.name.zh === '救世主'))
+  assert.ok(builtins.some((clip) => clip.id === 'and-survived' && clip.name.zh === '幸存者'))
+  assert.ok(builtins.some((clip) => clip.id === 'did-not-escape' && clip.name.zh === '欠债人'))
+  assert.ok(builtins.some((clip) => clip.id === 'fall-in-darkness' && clip.name.zh === '堕入黑暗'))
+  assert.equal(body.selected, 'for-humanity')
+  assert.ok(body.defaultCrop && body.defaultCrop.w === 1)
+  assert.ok(Math.abs(body.defaultCrop.h - 9 / 16) < 1e-9)
+})
+
+test('the selected background clip is served with real byte ranges', async () => {
+  const part = dispatch('GET', '/dsh-tarkov/bg/clip?id=and-survived', undefined, { range: 'bytes=0-1023' })
   const bytes = await drain(part)
   assert.equal(part.status, 206)
   assert.equal(part.headers['content-type'], 'video/webm')
@@ -320,39 +343,84 @@ test('the bundled background clip is served with real byte ranges', async () => 
   assert.match(part.headers['content-range'], /^bytes 0-1023\/\d+$/)
   assert.equal(bytes.length, 1024)
   const total = Number(part.headers['content-range'].split('/')[1])
-  assert.ok(total > 100000, 'the real 1080p clip should be shipped, got ' + total)
+  assert.ok(total > 100000, 'the real clip should be shipped, got ' + total)
   // Suffix range (players use it to read the tail / check the container).
-  const tail = dispatch('GET', '/dsh-tarkov/bg', undefined, { range: 'bytes=-256' })
+  const tail = dispatch('GET', '/dsh-tarkov/bg/clip?id=and-survived', undefined, { range: 'bytes=-256' })
   await drain(tail)
   assert.equal(tail.status, 206)
   assert.equal(tail.headers['content-length'], '256')
   assert.match(tail.headers['content-range'], new RegExp('^bytes ' + (total - 256) + '-' + (total - 1) + '/' + total + '$'))
-  // Unsatisfiable range → 416 advertising the size.
-  const bad = dispatch('GET', '/dsh-tarkov/bg', undefined, { range: 'bytes=99999999-' })
+  const bad = dispatch('GET', '/dsh-tarkov/bg/clip?id=and-survived', undefined, { range: 'bytes=99999999-' })
   await drain(bad)
   assert.equal(bad.status, 416)
   assert.equal(bad.headers['content-range'], 'bytes */' + total)
-  // No Range header → the whole body, still advertised as range-capable.
-  const full = dispatch('GET', '/dsh-tarkov/bg', undefined, {})
-  const whole = await drain(full)
-  assert.equal(full.status, 200)
-  assert.equal(whole.length, total)
 })
 
-test('a user clip in the bg dir overrides the bundled one', async () => {
+test('a user clip joins the list and wins under auto', async () => {
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { clip: 'auto' } })))
   const dir = path.join(tmp, 'dsh-tarkov', 'bg')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'mine.mp4'), Buffer.from('user-clip-bytes'))
-  const res = dispatch('GET', '/dsh-tarkov/bg', undefined, {})
+  const list = await jsonRoute('GET', '/dsh-tarkov/bg/list')
+  const user = list.body.clips.find((clip) => clip.id === 'user:mine.mp4')
+  assert.ok(user, 'user clip must be listed')
+  assert.equal(user.builtin, false)
+  assert.equal(list.body.selected, 'user:mine.mp4', 'auto prefers the local file')
+  const res = dispatch('GET', '/dsh-tarkov/bg/clip', undefined, {})
   const bytes = await drain(res)
   assert.equal(res.status, 200)
   assert.equal(res.headers['content-type'], 'video/mp4')
   assert.equal(bytes.toString('utf8'), 'user-clip-bytes')
-  fs.rmSync(dir, { recursive: true, force: true })
+  // A user clip has no poster: the client falls back to a text tile.
+  const poster = dispatch('GET', '/dsh-tarkov/bg/poster?id=' + encodeURIComponent('user:mine.mp4'))
+  await drain(poster)
+  assert.equal(poster.status, 404)
 })
 
-test('the poster still is served as a JPEG', async () => {
-  const res = dispatch('GET', '/dsh-tarkov/bg/poster', undefined, {})
+test('an explicit builtin clip wins over auto and is listed as selected', async () => {
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { clip: 'and-survived' } })))
+  const list = await jsonRoute('GET', '/dsh-tarkov/bg/list')
+  assert.equal(list.body.selected, 'and-survived')
+  const res = dispatch('GET', '/dsh-tarkov/bg/clip?id=and-survived', undefined, {})
+  const bytes = await drain(res)
+  assert.equal(res.status, 200)
+  assert.equal(res.headers['content-type'], 'video/webm')
+  assert.ok(bytes.length > 100000)
+})
+
+test('bg crops round-trip as normalized 16:9 and merge per clip', async () => {
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({
+    bg: { crops: { 'for-humanity': { x: 0.2, y: 0.1, w: 0.5, h: 0.2 } } },
+  })))
+  let prefs = await jsonRoute('GET', '/dsh-tarkov/prefs')
+  let crop = prefs.body.prefs.bg.crops['for-humanity']
+  assert.equal(crop.w, 0.5)
+  assert.ok(Math.abs(crop.h - (0.5 * 9) / 16) < 1e-3)
+  assert.ok(crop.x >= 0 && crop.x + crop.w <= 1 && crop.y >= 0 && crop.y + crop.h <= 1)
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({
+    bg: { crops: { 'and-survived': { x: 0, y: 0.2, w: 0.8, h: 0.45 } } },
+  })))
+  prefs = await jsonRoute('GET', '/dsh-tarkov/prefs')
+  assert.ok(prefs.body.prefs.bg.crops['for-humanity'], 'patching one clip must keep the rest')
+  assert.ok(prefs.body.prefs.bg.crops['and-survived'])
+})
+
+test('bg per-background tuning round-trips and merges per clip', async () => {
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({
+    bg: { perClip: { 'for-humanity': { opacity: 48, tone: -35, feather: 4.5, theme: 'dark' } } },
+  })))
+  let prefs = await jsonRoute('GET', '/dsh-tarkov/prefs')
+  assert.deepEqual(prefs.body.prefs.bg.perClip['for-humanity'], { opacity: 48, tone: -35, feather: 4.5, theme: 'dark' })
+  await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({
+    bg: { perClip: { 'and-survived': { opacity: 30, theme: 'light' }, 'for-humanity': { tone: 20, feather: 7.5 } } },
+  })))
+  prefs = await jsonRoute('GET', '/dsh-tarkov/prefs')
+  assert.deepEqual(prefs.body.prefs.bg.perClip['for-humanity'], { opacity: 48, tone: 20, feather: 7.5, theme: 'dark' })
+  assert.deepEqual(prefs.body.prefs.bg.perClip['and-survived'], { opacity: 30, tone: 0, feather: 5, theme: 'light' })
+})
+
+test('the poster still is served as a JPEG for a bundled clip', async () => {
+  const res = dispatch('GET', '/dsh-tarkov/bg/poster?id=for-humanity', undefined, {})
   const bytes = await drain(res)
   assert.equal(res.status, 200)
   assert.equal(res.headers['content-type'], 'image/jpeg')
@@ -360,8 +428,12 @@ test('the poster still is served as a JPEG', async () => {
   assert.equal(bytes[1], 0xd8)
 })
 
-test('turning the background off unmounts its routes again', async () => {
+test('turning the background off unmounts only the live clip routes', async () => {
   await jsonRoute('PUT', '/dsh-tarkov/prefs', Buffer.from(JSON.stringify({ bg: { enabled: false } })))
-  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg'), undefined, 'clip route must unmount')
-  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg/poster'), undefined, 'poster route must unmount')
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg'), undefined, 'compat clip route must unmount')
+  assert.equal(registered.find((r) => r.path === '/dsh-tarkov/bg/clip'), undefined, 'clip route must unmount')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/list'), 'list stays for the card')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/poster'), 'poster stays for the card')
+  assert.ok(registered.find((r) => r.path === '/dsh-tarkov/bg/preview'), 'preview stays for the framing editor')
+  fs.rmSync(path.join(tmp, 'dsh-tarkov', 'bg'), { recursive: true, force: true })
 })

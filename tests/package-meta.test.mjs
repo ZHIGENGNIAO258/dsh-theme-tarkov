@@ -49,18 +49,29 @@ test('the published file set ships the icon', () => {
 
 // ---- shipped media -----------------------------------------------------------
 
-test('the bundled background clip and its still are real, small media files', () => {
-  const clip = path.join(root, 'assets', 'bg', 'for-humanity.webm')
-  const still = path.join(root, 'assets', 'bg', 'poster.jpg')
-  assert.ok(fs.statSync(clip).isFile(), 'assets/bg/for-humanity.webm must ship')
-  assert.ok(fs.statSync(still).isFile(), 'assets/bg/poster.jpg must ship')
-  // EBML magic: a truncated or HTML-error-page copy fails here rather than in
-  // the browser, where a broken <video> silently shows a black rectangle.
-  assert.deepEqual([...fs.readFileSync(clip).subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3], 'the clip must be a WebM/Matroska file')
-  assert.deepEqual([...fs.readFileSync(still).subarray(0, 2)], [0xff, 0xd8], 'the still must be a JPEG')
-  // The whole point of transcoding the 12.4 MB master: keep the package small.
-  const clipSize = fs.statSync(clip).size
-  assert.ok(clipSize < 1024 * 1024, 'the 1080p centre crop should stay well under 1 MiB, got ' + clipSize)
+test('the bundled background library ships four real, small square clips and posters', () => {
+  const manifestPath = path.join(root, 'assets', 'bg', 'clips.json')
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+  assert.equal(manifest.clips.length, 4, 'four bundled clips are expected')
+  const names = manifest.clips.map((clip) => clip.name.zh)
+  assert.deepEqual(names, ['救世主', '幸存者', '欠债人', '堕入黑暗'])
+  let total = 0
+  for (const clip of manifest.clips) {
+    const video = path.join(root, 'assets', 'bg', clip.file)
+    const poster = path.join(root, 'assets', 'bg', clip.poster)
+    assert.ok(fs.statSync(video).isFile(), clip.file + ' must ship')
+    assert.ok(fs.statSync(poster).isFile(), clip.poster + ' must ship')
+    // EBML magic: a truncated or HTML-error-page copy fails here rather than in
+    // the browser, where a broken <video> silently shows a black rectangle.
+    assert.deepEqual([...fs.readFileSync(video).subarray(0, 4)], [0x1a, 0x45, 0xdf, 0xa3], clip.file + ' must be WebM')
+    assert.deepEqual([...fs.readFileSync(poster).subarray(0, 2)], [0xff, 0xd8], clip.poster + ' must be a JPEG')
+    assert.ok(Math.abs(clip.crop.w / clip.crop.h - 16 / 9) < 0.01, clip.id + ' default crop must be 16:9')
+    const size = fs.statSync(video).size
+    assert.ok(size < 2.5 * 1024 * 1024, clip.file + ' should stay under 2.5 MiB, got ' + size)
+    total += size + fs.statSync(poster).size
+  }
+  assert.ok(total < 5 * 1024 * 1024, 'the whole background library should stay under 5 MiB, got ' + total)
+  assert.ok(!fs.existsSync(path.join(root, 'assets', 'bg', 'poster.jpg')), 'the old wide poster must be gone')
 })
 
 test('the tool-failure chime ships as an m4a next to the other prompt sounds', () => {

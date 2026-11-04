@@ -1,7 +1,7 @@
 {
   "name": "dsh-theme-tarkov",
   "description": "以《逃离塔科夫》为灵感的 DSH Web 界面主题：动态背景、提示音、背景音乐、桌宠与状态文案。",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "icon": "assets/icon.png",
   "packageManager": "pnpm@11.24.0",
   "type": "module",

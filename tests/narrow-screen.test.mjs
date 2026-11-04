@@ -150,7 +150,7 @@ function buildEnv(matchMediaResult, prefs, conversation) {
     atob: (s) => s,
     setInterval: () => 1,
     clearInterval: () => {},
-    setTimeout: () => 1,
+    setTimeout: (fn, ms) => { if (ms === 0 && typeof fn === 'function') fn(); return 1; },
     clearTimeout: () => {},
     URL,
   }
@@ -185,7 +185,7 @@ async function runApply(matchMediaResult, prefs, conversation, options) {
   const themeCalls = []
   const themeListeners = []
   const themeRequests = []
-  let themePreference = 'system'
+  let themePreference = opts.initialTheme || 'system'
   const themeStub = {
     overrideTokens(source, tokens) {
       themeCalls.push({ source, tokens })
@@ -351,6 +351,17 @@ test('per-background theme application survives a synchronous theme/change echo'
   })
   const { themeRequests } = await runApply(false, prefs, undefined, { emitOnSetTheme: true })
   assert.deepEqual(themeRequests, ['dark'], 'one application, not a recursion')
+})
+
+test('a durable theme adopted before the clip is applied is left untouched', async () => {
+  const prefs = Object.assign({}, BG_PREFS, {
+    bg: Object.assign({}, BG_PREFS.bg, {
+      clip: 'for-humanity',
+      perClip: { 'for-humanity': { opacity: 50, tone: 0, theme: 'dark' } },
+    }),
+  })
+  const { themeRequests } = await runApply(false, prefs, undefined, { initialTheme: 'dark' })
+  assert.deepEqual(themeRequests, [], 'no setTheme when DSH already reports the clip theme')
 })
 
 test('per-background tuning: an unrecorded clip falls back to the global defaults', async () => {

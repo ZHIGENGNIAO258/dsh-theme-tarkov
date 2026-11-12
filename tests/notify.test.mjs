@@ -1,0 +1,309 @@
+// dsh-theme-tarkov — M1+M2 unit tests: event classification, per-session
+// dedup state machine, and prefs sanitization. Run with: node tests/notify.test.mjs
+import test from 'node:test'
+import assert from 'node:assert'
+import { classifySessionEvent, createSfxState, sanitizePrefs, mergePrefs, DEFAULT_PREFS, MAX_PENDING } from '../lib/index.js'
+
+const turnEnd = (kind) => ({ type: 'turn/end', seq: 1, time: 0, data: { turn: 1, reason: { kind } } })
+
+test('turn/end completed → done', () => {
+  assert.equal(classifySessionEvent(turnEnd('completed')), 'done')
+})
+
+test('turn/end blocked → approval', () => {
+  assert.equal(classifySessionEvent(turnEnd('blocked')), 'approval')
+})
+
+test('turn/end aborted / error / max-tokens → error', () => {
+  assert.equal(classifySessionEvent(turnEnd('aborted')), 'error')
+  assert.equal(classifySessionEvent(turnEnd('error')), 'error')
+  assert.equal(classifySessionEvent(turnEnd('max-tokens')), 'error')
+})
+
+test('approval/asked → approval, approval/decided → null', () => {
+  assert.equal(classifySessionEvent({ type: 'approval/asked', data: { id: 'x', toolName: 'y' } }), 'approval')
+  assert.equal(classifySessionEvent({ type: 'approval/decided', data: { id: 'x', outcome: 'allow' } }), null)
+})
+
+test('ask_user_question tool/call → approval, other tools → null', () => {
+  assert.equal(classifySessionEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'c', name: 'ask_user_question' } }), 'approval')
+  assert.equal(classifySessionEvent({ type: 'tool/call', data: { turn: 1, step: 1, callId: 'c', name: 'read' } }), null)
+})
+
+test('unrelated events → null', () => {
+  assert.equal(classifySessionEvent({ type: 'user/message' }), null)
+  assert.equal(classifySessionEvent({ type: 'turn/start' }), null)
+  assert.equal(classifySessionEvent(null), null)
+})
+
+test('approval rings once per pending decision (asked → blocked silence)', () => {
+  const state = createSfxState()
+  assert.equal(state.handle('s1', { type: 'approval/asked', data: { id: 'a', toolName: 'bash' } }), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's1' }])
+  // Same turn ends blocked afterwards: no second ring.
+  assert.equal(state.handle('s1', turnEnd('blocked')), false)
+  assert.deepEqual(state.drain(), [])
+})
+
+test('blocked without a prior approval/asked still rings', () => {
+  const state = createSfxState()
+  assert.equal(state.handle('s1', turnEnd('blocked')), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's1' }])
+})
+
+test('ask_user_question rings once: a blocked turn after it stays silent', () => {
+  const state = createSfxState()
+  const ask = { type: 'tool/call', data: { turn: 1, step: 1, callId: 'c', name: 'ask_user_question' } }
+  assert.equal(state.handle('s1', ask), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's1' }])
+  // The turn then closes blocked (answer still owed / the question was cancelled):
+  // the ring already happened for this pending decision.
+  assert.equal(state.handle('s1', turnEnd('blocked')), false)
+  assert.deepEqual(state.drain(), [])
+  // A different session is unaffected.
+  assert.equal(state.handle('s2', turnEnd('blocked')), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's2' }])
+})
+
+test('decided clears the pending flag; a later blocked rings again', () => {
+  const state = createSfxState()
+  state.handle('s1', { type: 'approval/asked', data: { id: 'a', toolName: 'bash' } })
+  state.drain()
+  state.handle('s1', { type: 'approval/decided', data: { id: 'a', outcome: 'allow' } })
+  assert.equal(state.handle('s1', turnEnd('blocked')), true)
+  assert.deepEqual(state.drain(), [{ type: 'approval', sessionId: 's1' }])
+})
+
+test('queue is capped at MAX_PENDING, drain empties it', () => {
+  const state = createSfxState()
+  const session = (id) => ({ type: 'turn/end', data: { turn: id, reason: { kind: 'completed' } } })
+  for (let i = 1; i <= MAX_PENDING; i++) {
+    assert.equal(state.handle('s' + i, session(i)), true, 'event #' + i)
+  }
+  assert.equal(state.handle('s-over', session(0)), false) // over cap
+  const first = state.drain()
+  assert.equal(first.length, MAX_PENDING)
+  // Queue is empty again: one more event fits.
+  assert.equal(state.handle('s5', session(5)), true)
+  assert.deepEqual(state.drain(), [{ type: 'done', sessionId: 's5' }])
+})
+
+test('subagent sessions are rejected before classification', () => {
+  const state = createSfxState()
+  // The firehose filter lives in apply(); here we only verify the state machine
+  // itself treats nothing specially — filtering is the caller's concern.
+  assert.equal(state.handle('child', turnEnd('completed')), true)
+  state.drain()
+  assert.equal(state.handle('child', turnEnd('completed')), true)
+})
+
+test('sanitizePrefs fixes out-of-range values and preserves valid ones', () => {
+  const fixed = sanitizePrefs({
+    banner: { enabled: false, text1: '', text2: 'x', opacity: 9 },
+    sfx: { enabled: true, volume: -5, sounds: { done: { dataUrl: 'data:audio/mp4;base64,AAAA', name: 'a.m4a' }, approval: 42 } },
+    music: { enabled: true, volume: 120, junk: 'strip-me' },
+  })
+  assert.equal(fixed.banner.enabled, false)
+  assert.equal(fixed.banner.text1, DEFAULT_PREFS.banner.text1) // '' falls back
+  assert.equal(fixed.banner.text2, 'x')
+  assert.equal(fixed.banner.opacity, DEFAULT_PREFS.banner.opacity) // >1 clamps to default
+  assert.equal(fixed.sfx.enabled, true)
+  assert.equal(fixed.sfx.volume, DEFAULT_PREFS.sfx.volume) // negative → default
+  assert.deepEqual(fixed.sfx.sounds.done, { dataUrl: 'data:audio/mp4;base64,AAAA', name: 'a.m4a' })
+  assert.equal(fixed.sfx.sounds.approval, null) // non-object → null
+  assert.equal(fixed.music.enabled, true)
+  assert.equal(fixed.music.volume, DEFAULT_PREFS.music.volume)
+  assert.equal(fixed.music.junk, undefined) // unknown keys stripped
+})
+
+test('sanitizePrefs handles null / non-object / oversized dataUrl', () => {
+  assert.deepEqual(sanitizePrefs(null), DEFAULT_PREFS)
+  assert.deepEqual(sanitizePrefs('x'), DEFAULT_PREFS)
+  const big = sanitizePrefs({ sfx: { sounds: { error: { dataUrl: 'data:audio/mp4;base64,' + 'A'.repeat(3 * 1024 * 1024), name: 'big.m4a' } } } })
+  assert.equal(big.sfx.sounds.error, null)
+})
+
+test('sanitizePrefs validates music.trackId (no path traversal)', () => {
+  assert.equal(sanitizePrefs({ music: { trackId: 'track1.wav' } }).music.trackId, 'track1.wav')
+  assert.equal(sanitizePrefs({ music: { trackId: '../x.wav' } }).music.trackId, null)
+  assert.equal(sanitizePrefs({ music: { trackId: 'a\\b.wav' } }).music.trackId, null)
+  assert.equal(sanitizePrefs({ music: { trackId: '' } }).music.trackId, null)
+  assert.equal(sanitizePrefs({ music: { trackId: null } }).music.trackId, null)
+})
+
+test('sanitizePrefs validates music.disabled / removed (path traversal stripped, deduped)', () => {
+  const cleaned = sanitizePrefs({ music: { disabled: ['a.wav', '../x.wav', 'a\\b.wav', '', 'a.wav', 'ok.mp3', 42], removed: ['../x.wav', 'track3.wav', 7] } })
+  assert.deepEqual(cleaned.music.disabled, ['a.wav', 'ok.mp3'])
+  assert.deepEqual(cleaned.music.removed, ['track3.wav'])
+  assert.deepEqual(sanitizePrefs({ music: { disabled: 'nope' } }).music.disabled, [])
+  assert.deepEqual(sanitizePrefs({ music: { disabled: null } }).music.disabled, [])
+  assert.deepEqual(sanitizePrefs({ music: { removed: null } }).music.removed, [])
+})
+
+test('mergePrefs merges field-wise and keeps base values', () => {
+  const base = JSON.parse(JSON.stringify(DEFAULT_PREFS))
+  base.music.volume = 55
+  const merged = mergePrefs(base, { music: { trackId: 't1.wav' } })
+  assert.equal(merged.music.volume, 55) // base kept
+  assert.equal(merged.music.trackId, 't1.wav')
+  const merged2 = mergePrefs(base, { sfx: { sounds: { error: null }, volume: 20 } })
+  assert.equal(merged2.sfx.volume, 20)
+  assert.equal(merged2.sfx.sounds.error, null)
+  assert.equal(merged2.sfx.sounds.done, null) // base value kept
+  assert.deepEqual(mergePrefs(base, null), base)
+})
+
+test('mergePrefs replaces music.disabled wholesale', () => {
+  const base = JSON.parse(JSON.stringify(DEFAULT_PREFS))
+  base.music.disabled = ['t1.wav']
+  const merged = mergePrefs(base, { music: { disabled: ['t2.wav', 't3.wav'] } })
+  assert.deepEqual(merged.music.disabled, ['t2.wav', 't3.wav'])
+  assert.deepEqual(mergePrefs(base, { music: { volume: 10 } }).music.disabled, ['t1.wav']) // untouched
+})
+
+// ---- tool failures (the 228 chime) ------------------------------------------
+
+const toolFail = (turn, code) => ({
+  type: 'tool/result',
+  data: { turn, step: 1, message: { isError: true, content: [] }, ...(code === undefined ? {} : { error: { name: 'x', code } }) },
+})
+
+test('tool/result isError → tool_error, a successful call → null', () => {
+  assert.equal(classifySessionEvent(toolFail(1, 'FS_NOT_OBSERVED')), 'tool_error')
+  assert.equal(classifySessionEvent(toolFail(1)), 'tool_error') // no code at all still rings
+  const ok = { type: 'tool/result', data: { turn: 1, step: 1, message: { isError: false, content: [] } } }
+  assert.equal(classifySessionEvent(ok), null)
+  // Malformed shapes stay silent rather than throwing.
+  assert.equal(classifySessionEvent({ type: 'tool/result', data: {} }), null)
+  assert.equal(classifySessionEvent({ type: 'tool/result' }), null)
+})
+
+test('a cancelled or never-started tool call is not a failure', () => {
+  for (const code of ['TOOL_ABORTED_BEFORE_DISPATCH', 'TOOL_NOT_STARTED', 'TOOL_OUTCOME_UNKNOWN']) {
+    assert.equal(classifySessionEvent(toolFail(1, code)), null, code)
+  }
+  assert.equal(classifySessionEvent(toolFail(1, 'FS_SANDBOX_DENIED')), 'tool_error')
+})
+
+test('every failed tool call rings (no per-turn / per-session collapse)', () => {
+  const state = createSfxState()
+  assert.equal(state.handle('s1', toolFail(1)), true)
+  assert.equal(state.handle('s1', toolFail(1)), true) // 13 failures in one turn = 13 chimes
+  assert.equal(state.handle('s1', toolFail(1)), true)
+  assert.deepEqual(state.drain(), [
+    { type: 'tool_error', sessionId: 's1' },
+    { type: 'tool_error', sessionId: 's1' },
+    { type: 'tool_error', sessionId: 's1' },
+  ])
+  // The next turn is a fresh incident too.
+  assert.equal(state.handle('s1', toolFail(2)), true)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
+  // Other sessions keep their own slot.
+  assert.equal(state.handle('s2', toolFail(1)), true)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's2' }])
+})
+
+test('a turn that fails after a tool failure still rings: two different incidents', () => {
+  const state = createSfxState()
+  assert.equal(state.handle('s1', toolFail(7)), true)
+  state.drain()
+  assert.equal(state.handle('s1', { type: 'turn/end', data: { turn: 7, reason: { kind: 'error' } } }), true)
+  assert.deepEqual(state.drain(), [{ type: 'error', sessionId: 's1' }])
+  assert.equal(state.handle('s1', toolFail(8)), true)
+  assert.deepEqual(state.drain(), [{ type: 'tool_error', sessionId: 's1' }])
+})
+
+test('a burst of failures up to MAX_PENDING all queue; only overflow drops', () => {
+  const state = createSfxState()
+  for (let i = 0; i < MAX_PENDING; i++) {
+    assert.equal(state.handle('s1', toolFail(1)), true, 'failure #' + (i + 1))
+  }
+  assert.equal(state.handle('s1', toolFail(1)), false) // over the burst cap
+  const drained = state.drain()
+  assert.equal(drained.length, MAX_PENDING)
+  assert.ok(drained.every((item) => item.type === 'tool_error'))
+  // Drained queue accepts more again.
+  assert.equal(state.handle('s1', toolFail(1)), true)
+})
+
+test('shipped defaults: 救世主 background, 42/0, pet off, banner 0.85', () => {
+  assert.equal(DEFAULT_PREFS.banner.opacity, 0.85)
+  assert.equal(DEFAULT_PREFS.pet.enabled, false)
+  assert.equal(DEFAULT_PREFS.pet.size, 112)
+  assert.equal(DEFAULT_PREFS.bg.enabled, true)
+  assert.equal(DEFAULT_PREFS.bg.opacity, 42)
+  assert.equal(DEFAULT_PREFS.bg.tone, 0)
+  assert.equal(DEFAULT_PREFS.bg.feather, 6)
+  assert.equal(DEFAULT_PREFS.bg.clip, 'for-humanity')
+  assert.equal(DEFAULT_PREFS.bg.crops['for-humanity'].y, 0.1449)
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['for-humanity'], { opacity: 50, tone: 0, feather: 3, theme: 'light' })
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['and-survived'], { opacity: 42, tone: 0, feather: 5, theme: 'dark' })
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['did-not-escape'], { opacity: 42, tone: 0, feather: 5, theme: 'dark' })
+  assert.deepEqual(DEFAULT_PREFS.bg.perClip['fall-in-darkness'], { opacity: 42, tone: 0, feather: 5, theme: 'dark' })
+  assert.equal(DEFAULT_PREFS.sfx.sounds.tool_error, null)
+  const clamped = sanitizePrefs({ bg: { enabled: true, opacity: 500, tone: 500, feather: 500 } })
+  assert.equal(clamped.bg.enabled, true)
+  assert.equal(clamped.bg.opacity, DEFAULT_PREFS.bg.opacity) // out of range → default
+  assert.equal(clamped.bg.tone, DEFAULT_PREFS.bg.tone)
+  assert.equal(clamped.bg.feather, DEFAULT_PREFS.bg.feather)
+  const kept = sanitizePrefs({ bg: { opacity: 45, tone: -40, feather: 4.5 } })
+  assert.equal(kept.bg.opacity, 45)
+  assert.equal(kept.bg.tone, -40)
+  assert.equal(kept.bg.feather, 4.5)
+  assert.equal(sanitizePrefs({ bg: { feather: 0 } }).bg.feather, 0)
+  // 0 is a valid strength now: the tint is fully transparent.
+  assert.equal(sanitizePrefs({ bg: { opacity: 0 } }).bg.opacity, 0)
+  assert.equal(sanitizePrefs({ bg: { opacity: 1 } }).bg.opacity, 1)
+  // The old one-directional `dim` migrates to a darkening, and an explicit
+  // `tone` always wins over a stale `dim` left in prefs.json.
+  assert.equal(sanitizePrefs({ bg: { dim: 30 } }).bg.tone, -30)
+  assert.equal(sanitizePrefs({ bg: { dim: 30, tone: 20 } }).bg.tone, 20)
+  assert.equal(sanitizePrefs({ bg: { dim: 500 } }).bg.tone, 0)
+  const merged = mergePrefs(DEFAULT_PREFS, { bg: { enabled: true } })
+  assert.equal(merged.bg.enabled, true)
+  assert.equal(merged.bg.opacity, DEFAULT_PREFS.bg.opacity)
+})
+
+test('bg clip and crop map: validated, normalized to 16:9, merged per clip', () => {
+  assert.equal(sanitizePrefs({ bg: { clip: 'user:我的片段.webm' } }).bg.clip, 'user:我的片段.webm')
+  assert.equal(sanitizePrefs({ bg: { clip: '../escape' } }).bg.clip, 'for-humanity')
+  assert.equal(sanitizePrefs({ bg: { clip: 'a/b' } }).bg.clip, 'for-humanity')
+  const crop = sanitizePrefs({ bg: { crops: { 'for-humanity': { x: 0.2, y: 0.1, w: 0.5, h: 0.2 } } } }).bg.crops['for-humanity']
+  assert.equal(crop.w, 0.5)
+  assert.ok(Math.abs(crop.h - (0.5 * 9) / 16) < 1e-3, 'height must be derived from the 16:9 width')
+  assert.ok(crop.x >= 0 && crop.x + crop.w <= 1 && crop.y >= 0 && crop.y + crop.h <= 1)
+  const merged = mergePrefs(
+    { bg: { crops: { a: { x: 0, y: 0.22, w: 1, h: 0.5625 } } } },
+    { bg: { crops: { b: { x: 0.1, y: 0.2, w: 0.5, h: 0.28125 } } } },
+  )
+  assert.ok(merged.bg.crops.a, 'patching one clip must keep the others')
+  assert.ok(merged.bg.crops.b)
+})
+
+test('bg per-background tuning: validated, kept independent, merged per clip and field', () => {
+  const prefs = sanitizePrefs({
+    bg: {
+      perClip: {
+        'for-humanity': { opacity: 48, tone: -35, feather: 4.5, theme: 'dark' },
+        'and-survived': { opacity: 101, tone: 200, feather: 99, theme: 'blue' },
+        '../escape': { opacity: 30 },
+        'back\\slash': { opacity: 30 },
+      },
+    },
+  })
+  assert.deepEqual(prefs.bg.perClip['for-humanity'], { opacity: 48, tone: -35, feather: 4.5, theme: 'dark' })
+  // Out-of-range values and unknown themes are dropped, not clamped, and the
+  // path-like key is rejected entirely.
+  assert.equal(prefs.bg.perClip['and-survived'], undefined)
+  assert.equal(prefs.bg.perClip['../escape'], undefined)
+  assert.equal(prefs.bg.perClip['back\\slash'], undefined)
+  // A record may legitimately carry only one field.
+  assert.deepEqual(sanitizePrefs({ bg: { perClip: { a: { theme: 'light' } } } }).bg.perClip.a, { theme: 'light' })
+
+  const merged = mergePrefs(
+    { bg: { perClip: { a: { opacity: 60, tone: -10, feather: 5, theme: 'dark' } } } },
+    { bg: { perClip: { b: { opacity: 30 }, a: { tone: 25, feather: 7.5 } } } },
+  )
+  assert.deepEqual(merged.bg.perClip.a, { opacity: 60, tone: 25, feather: 7.5, theme: 'dark' }, 'one field must not wipe the record')
+  assert.deepEqual(merged.bg.perClip.b, { opacity: 30 }, 'one clip must not wipe another')
+})

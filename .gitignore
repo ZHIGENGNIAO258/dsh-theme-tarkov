@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Logs & temp
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Local build artifacts
+dist/

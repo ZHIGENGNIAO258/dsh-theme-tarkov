@@ -1,0 +1,74 @@
+{
+  "name": "dsh-theme-tarkov",
+  "description": "以《逃离塔科夫》为灵感的 DSH Web 界面主题：动态背景、提示音、背景音乐、桌宠与状态文案。",
+  "version": "0.4.1",
+  "icon": "assets/icon.png",
+  "packageManager": "pnpm@11.24.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov.git"
+  },
+  "homepage": "https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov#readme",
+  "bugs": {
+    "url": "https://github.com/ZHIGENGNIAO258/dsh-theme-tarkov/issues"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "assets",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "theme",
+    "tarkov",
+    "audio",
+    "bgm",
+    "background",
+    "video",
+    "wallpaper",
+    "background-library",
+    "dark-mode",
+    "framing",
+    "status-line",
+    "web-ui"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node --check lib/index.js && node --check lib/client.js",
+    "test": "node tests/notify.test.mjs && node tests/status-keys.test.mjs && node tests/host-routes.test.mjs && node tests/status-texts.test.mjs && node tests/package-meta.test.mjs && node tests/client-smoke.mjs && node tests/narrow-screen.test.mjs",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "esbuild": "^0.28.2"
+  }
+}
